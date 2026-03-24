@@ -1,0 +1,19 @@
+[Unit]
+Description=SSSMusicBot Discord bot
+After=network-online.target lavalink.service
+Wants=network-online.target
+Requires=lavalink.service
+
+[Service]
+Type=simple
+User=musicbot
+Group=musicbot
+WorkingDirectory=/opt/sssmusicbot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/sssmusicbot/.venv/bin/python /opt/sssmusicbot/bot.py
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

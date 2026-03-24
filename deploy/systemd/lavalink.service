@@ -1,0 +1,17 @@
+[Unit]
+Description=Lavalink audio server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=musicbot
+Group=musicbot
+WorkingDirectory=/opt/sssmusicbot/lavalink
+ExecStart=/usr/bin/java -Xms512M -Xmx512M -Dfile.encoding=UTF-8 -jar /opt/sssmusicbot/lavalink/Lavalink.jar
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

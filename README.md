@@ -68,6 +68,53 @@ sudo apt install build-essential python3-dev
 
 Then use the same Quick Start steps above.
 
+## systemd on Ubuntu 24
+
+Template units are included in `deploy/systemd/`.
+
+Default assumptions:
+
+- app path: `/opt/sssmusicbot`
+- service user: `musicbot`
+- venv path: `/opt/sssmusicbot/.venv`
+
+Install flow:
+
+```bash
+sudo useradd -r -m -d /opt/sssmusicbot -s /bin/bash musicbot
+sudo mkdir -p /opt/sssmusicbot
+sudo chown -R musicbot:musicbot /opt/sssmusicbot
+```
+
+Copy the project, then as `musicbot`:
+
+```bash
+python3 -m venv /opt/sssmusicbot/.venv
+source /opt/sssmusicbot/.venv/bin/activate
+pip install -r /opt/sssmusicbot/requirements.txt
+cp /opt/sssmusicbot/.env.example /opt/sssmusicbot/.env
+cp /opt/sssmusicbot/lavalink/application.yml.example /opt/sssmusicbot/lavalink/application.yml
+```
+
+Install units:
+
+```bash
+sudo cp /opt/sssmusicbot/deploy/systemd/lavalink.service /etc/systemd/system/
+sudo cp /opt/sssmusicbot/deploy/systemd/musicbot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now lavalink.service
+sudo systemctl enable --now musicbot.service
+```
+
+Check status:
+
+```bash
+sudo systemctl status lavalink
+sudo systemctl status musicbot
+sudo journalctl -u lavalink -f
+sudo journalctl -u musicbot -f
+```
+
 ## Project Files
 
 - `bot.py` - main bot entrypoint and slash commands
