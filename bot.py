@@ -142,12 +142,13 @@ async def setup_hook():
     try:
         if GUILD_ID is not None:
             guild = discord.Object(id=GUILD_ID)
+            bot.tree.clear_commands(guild=guild)
             bot.tree.copy_global_to(guild=guild)
-            await bot.tree.sync(guild=guild)
-            logger.info("Команды синхронизированы для guild")
+            synced = await bot.tree.sync(guild=guild)
+            logger.info("Команды синхронизированы для guild: %s", [cmd.name for cmd in synced])
         else:
-            await bot.tree.sync()
-            logger.info("Команды синхронизированы глобально")
+            synced = await bot.tree.sync()
+            logger.info("Команды синхронизированы глобально: %s", [cmd.name for cmd in synced])
     except Exception as e:
         logger.error(f"Ошибка синхронизации: {e}")
 
@@ -445,8 +446,25 @@ async def on_ready():
     logger.info("Команды: %s", [c.name for c in bot.tree.get_commands()])
     if GUILD_ID is not None:
         logger.info("Guild sync target: %s", GUILD_ID)
+        logger.info("Guild commands: %s", [c.name for c in bot.tree.get_commands(guild=discord.Object(id=GUILD_ID))])
 
     await update_presence()
+
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+
+    if isinstance(error, app_commands.CommandNotFound):
+        logger.error(
+            "CommandNotFound name=%s guild=%s available_global=%s available_guild=%s",
+            error.name,
+            getattr(interaction.guild, "id", None),
+            [c.name for c in bot.tree.get_commands()],
+            [c.name for c in bot.tree.get_commands(guild=interaction.guild)] if interaction.guild else [],
+        )
+        return
+
+    logger.exception("Ошибка app command: %s", error)
        
 # ================= RUN =================
 
