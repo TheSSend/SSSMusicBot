@@ -142,6 +142,7 @@ async def setup_hook():
     try:
         if GUILD_ID is not None:
             guild = discord.Object(id=GUILD_ID)
+            bot.tree.copy_global_to(guild=guild)
             await bot.tree.sync(guild=guild)
             logger.info("Команды синхронизированы для guild")
         else:
@@ -442,6 +443,8 @@ async def on_ready():
 
     logger.info("Бот %s готов", bot.user)
     logger.info("Команды: %s", [c.name for c in bot.tree.get_commands()])
+    if GUILD_ID is not None:
+        logger.info("Guild sync target: %s", GUILD_ID)
 
     await update_presence()
        
