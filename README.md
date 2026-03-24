@@ -106,7 +106,7 @@ sudo systemctl enable --now lavalink.service
 sudo systemctl enable --now musicbot.service
 ```
 
-The bot service writes logs to `/var/log/sssmusicbot` via systemd.
+The bot service writes logs to `/var/log/sssmusicbot` and runtime data to `/var/lib/sssmusicbot` via systemd.
 
 Check status:
 

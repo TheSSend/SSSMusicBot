@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta
 from discord import app_commands
 from discord.ext import commands
 from edit_guard import safe_message_edit
+from runtime_paths import data_path
 
 logger = logging.getLogger(__name__)
 data_lock = asyncio.Lock()
@@ -24,7 +25,7 @@ ADMIN_ROLE_ID = int(ADMIN_ROLE_ID_STR) if ADMIN_ROLE_ID_STR and ADMIN_ROLE_ID_ST
 OWNER_ID_STR = os.getenv("OWNER_ID", "")
 OWNER_ID = int(OWNER_ID_STR) if OWNER_ID_STR.isdigit() else None
 
-GIVEAWAY_FILE = Path("giveaways.json")
+GIVEAWAY_FILE = data_path("giveaways.json")
 
 if not GIVEAWAY_FILE.exists():
     GIVEAWAY_FILE.write_text("{}", encoding="utf-8")

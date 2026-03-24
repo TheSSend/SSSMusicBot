@@ -8,6 +8,7 @@ These files are templates for Ubuntu 24.
 - Bot user/group: `musicbot`
 - Virtualenv: `/opt/sssmusicbot/.venv`
 - Bot logs: `/var/log/sssmusicbot`
+- Bot runtime data: `/var/lib/sssmusicbot`
 
 ## Install
 

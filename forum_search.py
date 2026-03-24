@@ -7,11 +7,12 @@ import logging
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
+from runtime_paths import data_path
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-DB = "forum_eye.db"
+DB = data_path("forum_eye.db")
 
 REQUEST_DELAY = 1
 CACHE_TIME = 300

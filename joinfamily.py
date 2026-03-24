@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+from runtime_paths import data_path
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ DATE_FORMAT = "%d.%m.%Y %H:%M"
 
 # ================= FILE =================
 
-DATA_FILE = Path("family_applications.json")
+DATA_FILE = data_path("family_applications.json")
 
 if not DATA_FILE.exists():
     DATA_FILE.write_text("{}", encoding="utf-8")

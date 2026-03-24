@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import re
 from edit_guard import safe_message_edit
+from runtime_paths import data_path
 
 import discord
 from discord import app_commands
@@ -19,7 +20,7 @@ DATE_FORMAT = "%d.%m.%Y %H:%M"
 MOSCOW_TZ = timezone(timedelta(hours=3))
 data_lock = asyncio.Lock()
 
-DATA_FILE = Path("signups.json")
+DATA_FILE = data_path("signups.json")
 if not DATA_FILE.exists():
     DATA_FILE.write_text("{}", encoding="utf-8")
 
