@@ -7,6 +7,7 @@ These files are templates for Ubuntu 24.
 - Project root: `/opt/sssmusicbot`
 - Bot user/group: `musicbot`
 - Virtualenv: `/opt/sssmusicbot/.venv`
+- Bot logs: `/var/log/sssmusicbot`
 
 ## Install
 

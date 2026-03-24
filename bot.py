@@ -16,23 +16,29 @@ logger = logging.getLogger(__name__)
 
 # ================= LOGGING =================
 
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
+log_dir_value = os.getenv("MUSICBOT_LOG_DIR", "logs")
+LOG_DIR = Path(log_dir_value)
 
-log_handler = RotatingFileHandler(
-    LOG_DIR / "bot.log",
-    maxBytes=2 * 1024 * 1024,
-    backupCount=3,
-    encoding="utf-8",
-)
+handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+
+try:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+except OSError as exc:
+    sys.stderr.write(f"Warning: cannot create log directory '{LOG_DIR}': {exc}\n")
+else:
+    handlers.append(
+        RotatingFileHandler(
+            LOG_DIR / "bot.log",
+            maxBytes=2 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+    )
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        log_handler,
-    ],
+    handlers=handlers,
     force=True,
 )
 

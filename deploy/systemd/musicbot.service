@@ -10,6 +10,8 @@ User=musicbot
 Group=musicbot
 WorkingDirectory=/opt/sssmusicbot
 Environment=PYTHONUNBUFFERED=1
+Environment=MUSICBOT_LOG_DIR=/var/log/sssmusicbot
+LogsDirectory=sssmusicbot
 ExecStart=/opt/sssmusicbot/.venv/bin/python /opt/sssmusicbot/bot.py
 Restart=always
 RestartSec=5
