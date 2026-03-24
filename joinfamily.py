@@ -20,6 +20,7 @@ HR_ACCESS = [
     for r in os.getenv("HR_ACCESS", "").split(",")
     if r.strip().isdigit()
 ]
+OWNER_ID = int(os.getenv("OWNER_ID", "0")) if os.getenv("OWNER_ID", "0").isdigit() else 0
 
 # ================= CALL CHANNELS =================
 
@@ -67,7 +68,14 @@ def now_time():
 
 
 def has_hr_access(member: discord.Member):
-    return any(role.id in HR_ACCESS for role in member.roles)
+    if member.id == OWNER_ID:
+        return True
+
+    allowed_ids = set(HR_ACCESS)
+    if member.id in allowed_ids:
+        return True
+
+    return any(role.id in allowed_ids for role in member.roles)
 
 
 # ================= MODAL =================
@@ -122,6 +130,13 @@ class JoinFamilyModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
 
+        if interaction.guild is None or interaction.channel is None:
+            await interaction.response.send_message(
+                "❌ Команда доступна только на сервере.",
+                ephemeral=True
+            )
+            return
+
         if CALL_CHANNELS and interaction.channel.id not in CALL_CHANNELS:
             await interaction.response.send_message(
                 "❌ Подавать заявку можно только в специальных каналах.",
@@ -133,6 +148,7 @@ class JoinFamilyModal(discord.ui.Modal):
             data = load_data()
             guild_data = data.setdefault(str(interaction.guild.id), {})
             user_apps = guild_data.setdefault(str(interaction.user.id), [])
+            previous_apps = list(user_apps)
 
             for app in user_apps:
                 if not app["closed"]:
@@ -158,11 +174,19 @@ class JoinFamilyModal(discord.ui.Modal):
                     send_messages=True
                 )
 
-        channel = await interaction.guild.create_text_channel(
-            name=f"заявка-{interaction.user.name}".lower(),
-            category=category,
-            overwrites=overwrites
-        )
+        try:
+            channel = await interaction.guild.create_text_channel(
+                name=f"заявка-{interaction.user.name}".lower(),
+                category=category,
+                overwrites=overwrites
+            )
+        except Exception:
+            logger.exception("Не удалось создать канал заявки в семью")
+            await interaction.response.send_message(
+                "❌ Не удалось создать канал заявки. Проверь права бота.",
+                ephemeral=True
+            )
+            return
 
         application = {
             "nickname": self.nickname.value,
@@ -186,10 +210,10 @@ class JoinFamilyModal(discord.ui.Modal):
 
         # ================= ПРЕДЫДУЩИЕ ЗАЯВКИ =================
 
-        if len(user_apps) > 1:
+        if previous_apps:
             links = []
 
-            for old in user_apps[:-1]:
+            for old in previous_apps:
 
                 emoji = "🟡"
 
@@ -295,14 +319,18 @@ class ApplicationManageView(discord.ui.View):
 
     async def finalize(self, interaction, status):
 
+        await interaction.response.defer(ephemeral=True)
+
         async with data_lock:
             data = load_data()
             guild_data = data.get(str(interaction.guild.id))
             if not guild_data:
+                await interaction.followup.send("❌ Активная заявка не найдена.", ephemeral=True)
                 return
 
             apps = guild_data.get(str(self.applicant_id))
             if not apps:
+                await interaction.followup.send("❌ Активная заявка не найдена.", ephemeral=True)
                 return
 
             application = None
@@ -313,6 +341,10 @@ class ApplicationManageView(discord.ui.View):
                     app["status"] = status
                     application = app
                     break
+
+            if application is None:
+                await interaction.followup.send("❌ Активная заявка не найдена.", ephemeral=True)
+                return
 
             save_data(data)
 
@@ -360,7 +392,7 @@ class ApplicationManageView(discord.ui.View):
                             break
                     save_data(data)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Заявка {status}. Канал удалится через 5 секунд.",
             ephemeral=True
         )
@@ -478,6 +510,10 @@ class JoinFamily(commands.Cog):
         description: str,
         image: discord.Attachment = None
     ):
+
+        if interaction.guild is None or interaction.channel is None:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
 
         if not has_hr_access(interaction.user):
             await interaction.response.send_message("❌ Нет доступа.", ephemeral=True)

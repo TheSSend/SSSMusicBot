@@ -85,9 +85,13 @@ ID_RE = re.compile(r"\d+")
 def parse_roles_input(guild: discord.Guild, text: str):
     ids = set()
     for m in ROLE_MENTION_RE.finditer(text):
-        ids.add(int(m.group(1)))
+        role_id = int(m.group(1))
+        if guild.get_role(role_id):
+            ids.add(role_id)
     for m in ID_RE.finditer(text):
-        ids.add(int(m.group(0)))
+        role_id = int(m.group(0))
+        if guild.get_role(role_id):
+            ids.add(role_id)
     return list(ids)
 
 # ================= EMBED =================
@@ -275,6 +279,8 @@ class Signups(commands.Cog):
         if member.id == OWNER_ID:
             return True
         allowed_ids = set(SIGNUP_MANAGERS) | set(SIGNUP_ADMINS)
+        if member.id in allowed_ids:
+            return True
         return any(role.id in allowed_ids for role in member.roles)
 
     async def restore_signups(self):
@@ -373,6 +379,10 @@ class Signups(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
 
+        if interaction.guild is None or interaction.channel is None:
+            await interaction.followup.send("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
         if not self.has_permission(interaction.user):
             await interaction.followup.send("❌ Нет доступа.", ephemeral=True)
             return
@@ -406,10 +416,27 @@ class Signups(commands.Cog):
 
         if branch:
 
-            thread = await message.create_thread(
-                name=branch,
-                auto_archive_duration=1440
-            )
+            if not isinstance(interaction.channel, discord.TextChannel):
+                await message.delete()
+                await interaction.followup.send(
+                    "❌ Ветку можно создать только в обычном текстовом канале.",
+                    ephemeral=True
+                )
+                return
+
+            try:
+                thread = await message.create_thread(
+                    name=branch,
+                    auto_archive_duration=1440
+                )
+            except Exception:
+                logger.exception("Не удалось создать ветку signup")
+                await message.delete()
+                await interaction.followup.send(
+                    "❌ Не удалось создать ветку для обсуждения. Проверь права бота.",
+                    ephemeral=True
+                )
+                return
 
             thread_id = thread.id
             thread_url = f"https://discord.com/channels/{interaction.guild.id}/{thread.id}"
