@@ -368,6 +368,15 @@ class Signups(commands.Cog):
     # ================= COMMAND =================
 
     @app_commands.command(name="plus", description="Создать список записи")
+    @app_commands.describe(
+        title="Название записи",
+        end_date="Время окончания: 18:30 или 24.02.2026 18:30",
+        slots="Количество основных мест",
+        extra_slots="Количество резервных мест",
+        image="Картинка для записи",
+        branch="Название ветки обсуждения",
+        roles="Роли для пинга: mention или ID"
+    )
     async def plus(self,
                    interaction: discord.Interaction,
                    title: str,

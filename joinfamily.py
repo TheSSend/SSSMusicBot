@@ -138,13 +138,6 @@ class JoinFamilyModal(discord.ui.Modal):
             )
             return
 
-        if CALL_CHANNELS and interaction.channel.id not in CALL_CHANNELS:
-            await interaction.response.send_message(
-                "❌ Подавать заявку можно только в специальных каналах.",
-                ephemeral=True
-            )
-            return
-
         async with data_lock:
             data = load_data()
             guild_data = data.setdefault(str(interaction.guild.id), {})
@@ -503,6 +496,11 @@ class JoinFamily(commands.Cog):
     @app_commands.command(
         name="joinfamily",
         description="Создать кнопку подачи заявки в семью"
+    )
+    @app_commands.describe(
+        title="Заголовок блока с заявкой",
+        description="Описание или условия вступления",
+        image="Картинка для баннера заявки"
     )
     async def joinfamily(
         self,
