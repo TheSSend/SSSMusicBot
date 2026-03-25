@@ -324,6 +324,9 @@ class ForumParser:
                 if not title or "Check your browser" in title or "Please turn JavaScript" in title:
                     continue
 
+                if static not in title:
+                    continue
+
                 if url in seen:
                     continue
 
