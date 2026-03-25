@@ -4,6 +4,9 @@ import asyncio
 import sqlite3
 import os
 import logging
+import urllib.request
+import time
+from urllib.parse import quote_plus, urlparse, parse_qs, unquote
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
@@ -17,6 +20,8 @@ DB = data_path("forum_eye.db")
 REQUEST_DELAY = 1
 CACHE_TIME = 300
 PAGE_CACHE = {}
+SEARCH_CACHE = {}
+BROWSER_WAIT_SECONDS = float(os.getenv("FORUM_BROWSER_WAIT", "6"))
 
 FORUM_ADMIN_IDS = [
     int(x.strip())
@@ -183,6 +188,49 @@ def get_soup_parser():
 
 class ForumParser:
 
+    def _render_page_sync(self, url: str):
+
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+        except ModuleNotFoundError:
+            logger.warning("selenium не установлен, browser fallback для форума недоступен")
+            return None
+
+        options = Options()
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1365,900")
+        options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+        browser_binary = os.getenv("FORUM_BROWSER_BINARY", "").strip()
+        if browser_binary:
+            options.binary_location = browser_binary
+
+        driver = None
+        try:
+            driver = webdriver.Chrome(options=options)
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+            time.sleep(BROWSER_WAIT_SECONDS)
+            return driver.page_source
+        except Exception:
+            logger.exception("Не удалось получить страницу форума через headless browser")
+            return None
+        finally:
+            if driver is not None:
+                try:
+                    driver.quit()
+                except Exception:
+                    logger.exception("Не удалось закрыть headless browser форума")
+
+
+    async def fetch_rendered(self, url: str):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: self._render_page_sync(url))
+
     async def fetch(self, url):
 
         if url in PAGE_CACHE:
@@ -198,11 +246,102 @@ class ForumParser:
                 r.raise_for_status()
                 html = await r.text()
 
+        if "Please turn JavaScript on" in html:
+            logger.warning("Форум вернул anti-bot challenge, пробую headless browser fallback")
+            rendered_html = await self.fetch_rendered(url)
+            if rendered_html:
+                html = rendered_html
+
         PAGE_CACHE[url] = (html, asyncio.get_event_loop().time())
 
         await asyncio.sleep(REQUEST_DELAY)
 
         return html
+
+
+    async def fetch_search(self, query: str):
+
+        cache_key = f"search:{query}"
+        if cache_key in SEARCH_CACHE:
+            html, ts = SEARCH_CACHE[cache_key]
+            if asyncio.get_event_loop().time() - ts < CACHE_TIME:
+                return html
+
+        search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+        request = urllib.request.Request(
+            search_url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+
+        loop = asyncio.get_running_loop()
+        html = await loop.run_in_executor(
+            None,
+            lambda: urllib.request.urlopen(request, timeout=20).read().decode("utf-8", "ignore")
+        )
+
+        SEARCH_CACHE[cache_key] = (html, asyncio.get_event_loop().time())
+
+        await asyncio.sleep(REQUEST_DELAY)
+        return html
+
+
+    async def search_threads(self, static: str, server: int, complaint_type: str):
+
+        BeautifulSoup = get_soup_parser()
+        queries = [
+            f'{static} site:forum.majestic-rp.ru жалоба',
+            f'{static} site:forum.majestic-rp.ru/threads жалоба',
+            f'{static} site:forum.majestic-rp.ru/threads',
+        ]
+
+        if complaint_type == "from":
+            queries.insert(1, f'{static} site:forum.majestic-rp.ru обращение')
+
+        seen = set()
+        results = []
+
+        for query in queries:
+            html = await self.fetch_search(query)
+            soup = BeautifulSoup(html, "html.parser")
+
+            for item in soup.select(".result"):
+                link_tag = item.select_one(".result__a")
+                if not link_tag:
+                    continue
+
+                raw_href = link_tag.get("href", "")
+                parsed = urlparse(raw_href)
+                if "duckduckgo.com" in parsed.netloc and parsed.query:
+                    url = parse_qs(parsed.query).get("uddg", [""])[0]
+                    url = unquote(url)
+                else:
+                    url = raw_href
+
+                if "/threads/" not in url or "forum.majestic-rp.ru" not in url:
+                    continue
+
+                title = link_tag.get_text(" ", strip=True)
+                if not title or "Check your browser" in title or "Please turn JavaScript" in title:
+                    continue
+
+                if url in seen:
+                    continue
+
+                snippet_tag = item.select_one(".result__snippet")
+                snippet = snippet_tag.get_text(" ", strip=True) if snippet_tag else ""
+
+                seen.add(url)
+                results.append({
+                    "title": title,
+                    "url": url,
+                    "status": "unknown",
+                    "snippet": snippet,
+                })
+
+                if len(results) >= 10:
+                    return results
+
+        return results
 
 
     async def parse_topic(self, url):
@@ -231,6 +370,10 @@ class ForumParser:
         while True:
 
             html = await self.fetch(url + f"page-{page}")
+
+            if "Please turn JavaScript on" in html:
+                logger.warning("Форум вернул anti-bot challenge вместо списка тем")
+                return []
 
             soup = BeautifulSoup(html, "html.parser")
 
@@ -324,6 +467,9 @@ class ForumView(discord.ui.View):
             static
         )
 
+        if not results:
+            results = await parser.search_threads(static, server, "from")
+
         embed = discord.Embed(
             title=f"Жалобы ОТ {static}",
             color=0xff3b3b
@@ -335,7 +481,7 @@ class ForumView(discord.ui.View):
         for r in results[:10]:
             embed.add_field(
                 name=r["title"],
-                value=r["url"],
+                value=(f"{r['url']}\n{r.get('snippet', '')[:180]}".strip()),
                 inline=False
             )
 
@@ -365,6 +511,9 @@ class ForumView(discord.ui.View):
             static
         )
 
+        if not results:
+            results = await parser.search_threads(static, server, "on")
+
         embed = discord.Embed(
             title=f"Жалобы НА {static}",
             color=0xff3b3b
@@ -376,7 +525,7 @@ class ForumView(discord.ui.View):
         for r in results[:10]:
             embed.add_field(
                 name=r["title"],
-                value=r["url"],
+                value=(f"{r['url']}\n{r.get('snippet', '')[:180]}".strip()),
                 inline=False
             )
 

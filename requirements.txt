@@ -6,3 +6,4 @@ aiohttp>=3.0
 beautifulsoup4>=4.0
 python-dotenv>=0.19
 uvloop>=0.19; platform_system != "Windows"
+selenium>=4.0

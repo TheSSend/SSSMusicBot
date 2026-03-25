@@ -66,6 +66,12 @@ Optional but recommended for performance:
 sudo apt install build-essential python3-dev
 ```
 
+For `forum_search` on Ubuntu 24, install headless Chromium support:
+
+```bash
+sudo apt install chromium-driver chromium
+```
+
 Then use the same Quick Start steps above.
 
 ## systemd on Ubuntu 24
