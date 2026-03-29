@@ -8,6 +8,11 @@ Type=simple
 User=musicbot
 Group=musicbot
 WorkingDirectory=/opt/sssmusicbot/lavalink
+Environment=TMPDIR=/var/lib/sssmusicbot/tmp
+Environment=JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/var/lib/sssmusicbot/tmp
+StateDirectory=sssmusicbot
+ExecStartPre=/usr/bin/mkdir -p /var/lib/sssmusicbot/tmp
+ExecStartPre=/usr/bin/chown musicbot:musicbot /var/lib/sssmusicbot/tmp
 ExecStart=/usr/bin/java -Xms512M -Xmx512M -Dfile.encoding=UTF-8 -jar /opt/sssmusicbot/lavalink/Lavalink.jar
 Restart=always
 RestartSec=5

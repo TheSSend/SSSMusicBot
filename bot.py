@@ -594,9 +594,11 @@ def apply_track_metadata(track, *, title: str | None = None, author: str | None 
         except Exception:
             pass
 
-    if author:
+    normalized_author = normalize_author(author)
+
+    if normalized_author:
         try:
-            track._author = author
+            track._author = normalized_author
         except Exception:
             pass
 
