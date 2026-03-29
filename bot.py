@@ -498,6 +498,27 @@ async def build_search_candidates(query: str) -> list[str]:
     return candidates
 
 
+def build_metadata_candidates(title: str | None, author: str | None) -> list[str]:
+
+    parts = [part for part in [author, title] if part]
+    if not parts:
+        return []
+
+    combined = sanitize_search_text(" ".join(parts))
+    candidates: list[str] = []
+
+    if combined:
+        candidates.append(f"ytmsearch:{combined}")
+        candidates.append(f"ytsearch:{combined}")
+
+    if title:
+        cleaned_title = sanitize_search_text(title)
+        candidates.append(f"ytmsearch:{cleaned_title}")
+        candidates.append(f"ytsearch:{cleaned_title}")
+
+    return candidates
+
+
 async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None, str | None]:
 
     try:
@@ -635,6 +656,29 @@ async def fetch_best_tracks(node: wavelink.Node, query: str):
             return results
 
     media_url, title, author = await resolve_with_ytdlp(query)
+    metadata_candidates = build_metadata_candidates(title, author)
+
+    for candidate in metadata_candidates:
+        logger.info("Searching Lavalink with yt-dlp metadata %s", candidate)
+        try:
+            results = await wavelink.Pool.fetch_tracks(candidate, node=node)
+        except wavelink.LavalinkLoadException as exc:
+            logger.warning("Metadata search failed %s: %s", candidate, exc)
+            continue
+        except wavelink.LavalinkException:
+            logger.exception("Metadata search node error %s", candidate)
+            continue
+
+        logger.info(
+            "Search results for yt-dlp metadata %s: type=%s len=%s",
+            candidate,
+            type(results).__name__,
+            len(results) if hasattr(results, "__len__") else "?",
+        )
+
+        if results:
+            return results
+
     if media_url:
         logger.info("yt-dlp fallback resolved media url for %s -> %s", query, title or media_url)
 
