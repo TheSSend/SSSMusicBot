@@ -109,15 +109,15 @@ class MusicPlayer(wavelink.Player):
 def progress_bar(elapsed, total):
 
     if total <= 0:
-        return "⬜" * 20
+        return "░" * 10
 
     ratio = elapsed / total
-    filled = int(ratio * 20)
+    filled = int(ratio * 10)
 
-    if filled > 20:
-        filled = 20
+    if filled > 10:
+        filled = 10
 
-    return "🟩" * filled + "⬜" * (20 - filled)
+    return "▰" * filled + "▱" * (10 - filled)
 
 
 # ================= EMBED =================
@@ -306,12 +306,19 @@ async def send_temporary_followup(
     delete_after: int = 5,
 ):
 
-    message = await interaction.followup.send(content=content, embed=embed, view=view, wait=True)
+    message = await interaction.followup.send(
+        content=content,
+        embed=embed,
+        view=view,
+        wait=True,
+        delete_after=delete_after,
+    )
 
     async def _delete_later():
         try:
             await asyncio.sleep(delete_after)
-            await message.delete()
+            if not message.flags.ephemeral:
+                await message.delete()
         except asyncio.CancelledError:
             return
         except Exception:
