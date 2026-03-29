@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 def display_author(value: str | None) -> str:
 
     if not value:
-        return "Unknown artist"
+        return "Неизвестный исполнитель"
 
     normalized = " ".join(value.split()).strip()
 
@@ -23,16 +23,20 @@ def display_author(value: str | None) -> str:
             normalized = normalized[: -len(suffix)].strip()
             break
 
-    return normalized or "Unknown artist"
+    return normalized or "Неизвестный исполнитель"
 
 
 def display_requester(value) -> str:
 
     if value is None:
-        return "Unknown requester"
+        return "Неизвестно"
+
+    mention = getattr(value, "mention", None)
+    if mention:
+        return mention
 
     name = getattr(value, "display_name", None) or getattr(value, "name", None) or str(value)
-    return " ".join(str(name).split()).strip() or "Unknown requester"
+    return " ".join(str(name).split()).strip() or "Неизвестно"
 
 # ================= PLAYER =================
 
@@ -144,20 +148,29 @@ def build_embed(player: MusicPlayer):
 
     embed = discord.Embed(
         title="🎵 Сейчас играет",
-        description=f"**{track.title}**",
         color=0x57F287,
     )
 
-    embed.add_field(name="Исполнитель", value=display_author(track.author), inline=False)
+    embed.add_field(name="Трек", value=f"**{track.title}**", inline=False)
+
+    embed.add_field(
+        name="Исполнитель",
+        value=display_author(track.author),
+        inline=True,
+    )
+
+    requester = getattr(track, "requester", None)
+    embed.add_field(
+        name="Включил",
+        value=display_requester(requester),
+        inline=True,
+    )
+
     embed.add_field(
         name="Прогресс",
         value=f"`{elapsed//60:02}:{elapsed%60:02}` {bar} `{total//60:02}:{total%60:02}`",
         inline=False,
     )
-
-    requester = getattr(track, "requester", None)
-    if requester is not None:
-        embed.set_footer(text=f"Запросил: {display_requester(requester)}")
 
     artwork = getattr(track, "artwork", None)
     if artwork:
