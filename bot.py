@@ -490,6 +490,71 @@ async def build_search_candidates(query: str) -> list[str]:
     return candidates
 
 
+async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None]:
+
+    try:
+        import yt_dlp
+    except ImportError:
+        logger.info("yt-dlp is not installed, skipping direct media fallback")
+        return None, None
+
+    normalized = normalize_query(query)
+    if not normalized:
+        return None, None
+
+    if is_youtube_url(normalized):
+        target = normalized
+    else:
+        target = f"ytsearch1:{normalized}"
+
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "extract_flat": False,
+    }
+
+    def _extract():
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(target, download=False)
+
+        if not info:
+            return None, None
+
+        if info.get("entries"):
+            entries = [entry for entry in info["entries"] if entry]
+            if not entries:
+                return None, None
+            info = entries[0]
+
+        title = str(info.get("title") or "").strip() or None
+        formats = info.get("formats") or []
+
+        best_audio = None
+        for item in formats:
+            if not item:
+                continue
+            if item.get("acodec") and item.get("url"):
+                best_audio = item
+                if item.get("vcodec") == "none":
+                    break
+
+        media_url = None
+        if best_audio is not None:
+            media_url = best_audio.get("url")
+        else:
+            media_url = info.get("url")
+
+        return media_url, title
+
+    try:
+        return await asyncio.to_thread(_extract)
+    except Exception:
+        logger.exception("yt-dlp fallback failed for %s", normalized)
+        return None, None
+
+
 async def fetch_best_tracks(node: wavelink.Node, query: str):
 
     candidates = await build_search_candidates(query)
@@ -517,6 +582,26 @@ async def fetch_best_tracks(node: wavelink.Node, query: str):
 
         if results:
             return results
+
+    media_url, title = await resolve_with_ytdlp(query)
+    if media_url:
+        logger.info("yt-dlp fallback resolved media url for %s -> %s", query, title or media_url)
+
+        try:
+            results = await wavelink.Pool.fetch_tracks(media_url, node=node)
+        except wavelink.LavalinkLoadException as exc:
+            logger.warning("Direct media fallback failed %s: %s", media_url, exc)
+        except wavelink.LavalinkException:
+            logger.exception("Direct media fallback node error %s", media_url)
+        else:
+            logger.info(
+                "Search results for yt-dlp fallback %s: type=%s len=%s",
+                title or query,
+                type(results).__name__,
+                len(results) if hasattr(results, "__len__") else "?",
+            )
+            if results:
+                return results
 
     if last_exc is not None:
         raise last_exc
