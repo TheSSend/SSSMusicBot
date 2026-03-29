@@ -17,7 +17,7 @@ lavalink:
       vimeo: true
       nico: true
       http: true
-      local: false
+      local: true
     filters:
       volume: true
       equalizer: true

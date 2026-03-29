@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import logging
+import tempfile
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
@@ -553,17 +554,17 @@ def build_metadata_candidates(title: str | None, author: str | None) -> list[str
     return candidates
 
 
-async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None, str | None]:
+async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None, str | None, str | None]:
 
     try:
         import yt_dlp
     except ImportError:
         logger.info("yt-dlp is not installed, skipping direct media fallback")
-        return None, None, None
+        return None, None, None, None
 
     normalized = normalize_query(query)
     if not normalized:
-        return None, None, None
+        return None, None, None, None
 
     if is_youtube_url(normalized):
         target = normalized
@@ -584,12 +585,12 @@ async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None, str | 
             info = ydl.extract_info(target, download=False)
 
         if not info:
-            return None, None, None
+            return None, None, None, None
 
         if info.get("entries"):
             entries = [entry for entry in info["entries"] if entry]
             if not entries:
-                return None, None, None
+                return None, None, None, None
             info = entries[0]
 
         title = str(info.get("title") or "").strip() or None
@@ -631,13 +632,36 @@ async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None, str | 
             if fallback_url and is_stream_url(fallback_url):
                 media_url = fallback_url
 
-        return media_url, title, author
+        local_path = None
+        try:
+            temp_dir = Path(tempfile.mkdtemp(prefix="sssmusicbot-yt-"))
+            download_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                "format": "bestaudio/best",
+                "outtmpl": str(temp_dir / "%(title).80s-%(id)s.%(ext)s"),
+                "restrictfilenames": True,
+                "cachedir": False,
+            }
+
+            with yt_dlp.YoutubeDL(download_opts) as ydl:
+                downloaded = ydl.extract_info(target, download=True)
+
+            if downloaded:
+                local_path = ydl.prepare_filename(downloaded)
+                if local_path and not Path(local_path).exists():
+                    local_path = None
+        except Exception:
+            logger.exception("yt-dlp local download fallback failed for %s", normalized)
+
+        return media_url, title, author, local_path
 
     try:
         return await asyncio.to_thread(_extract)
     except Exception:
         logger.exception("yt-dlp fallback failed for %s", normalized)
-        return None, None, None
+        return None, None, None, None
 
 
 def apply_track_metadata(track, *, title: str | None = None, author: str | None = None, uri: str | None = None):
@@ -689,8 +713,33 @@ async def fetch_best_tracks(node: wavelink.Node, query: str):
         if results:
             return results
 
-    media_url, title, author = await resolve_with_ytdlp(query)
+    media_url, title, author, local_path = await resolve_with_ytdlp(query)
     metadata_candidates = build_metadata_candidates(title, author)
+
+    if local_path:
+        file_url = Path(local_path).as_uri()
+        logger.info("yt-dlp local file fallback for %s -> %s", query, file_url)
+        try:
+            results = await wavelink.Pool.fetch_tracks(file_url, node=node)
+        except wavelink.LavalinkLoadException as exc:
+            logger.warning("Local file fallback failed %s: %s", file_url, exc)
+        except wavelink.LavalinkException:
+            logger.exception("Local file fallback node error %s", file_url)
+        else:
+            logger.info(
+                "Search results for yt-dlp local fallback %s: type=%s len=%s",
+                title or query,
+                type(results).__name__,
+                len(results) if hasattr(results, "__len__") else "?",
+            )
+            if results:
+                if isinstance(results, list):
+                    for track in results:
+                        apply_track_metadata(track, title=title, author=author, uri=file_url)
+                else:
+                    for track in getattr(results, "tracks", []):
+                        apply_track_metadata(track, title=title, author=author, uri=file_url)
+                return results
 
     for candidate in metadata_candidates:
         logger.info("Searching Lavalink with yt-dlp metadata %s", candidate)
