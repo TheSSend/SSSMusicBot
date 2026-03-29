@@ -352,7 +352,23 @@ async def play_music(interaction: discord.Interaction, query: str):
 
         # ================= SEARCH =================
 
-        results = await wavelink.Pool.fetch_tracks(query, node=node)
+        normalized = query.strip()
+        if normalized and not normalized.lower().startswith(
+            (
+                "ytsearch:",
+                "scsearch:",
+                "ytmsearch:",
+                "search:",
+                "https://",
+                "http://",
+                "spotify:",
+                "soundcloud:",
+                "bandcamp:",
+            )
+        ):
+            normalized = f"ytsearch:{normalized}"
+
+        results = await wavelink.Pool.fetch_tracks(normalized, node=node)
 
         if not results:
             await interaction.followup.send("❌ Ничего не найдено")
