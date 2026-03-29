@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-from music_core import MusicPlayer, start_track, send_control_message
+from music_core import MusicPlayer, start_track, send_control_message, build_embed, MusicControls
 from edit_guard import safe_message_edit, start_cleanup_task
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,8 @@ YOUTUBE_HOSTS = {
     "music.youtube.com",
     "youtu.be",
 }
+
+_music_update_task: asyncio.Task | None = None
 
 # ================= LOGGING =================
 
@@ -127,6 +129,34 @@ async def update_presence(player=None):
         except Exception:
             logger.exception("Не удалось обновить стандартный presence")
 
+
+async def music_controls_updater():
+
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        try:
+            node = wavelink.Pool.get_node()
+            for player in node.players.values():
+                if not player or not getattr(player, "current_track", None):
+                    continue
+
+                if not getattr(player, "control_message", None):
+                    continue
+
+                try:
+                    await safe_message_edit(
+                        player.control_message,
+                        embed=build_embed(player),
+                        view=MusicControls(player),
+                    )
+                except Exception:
+                    logger.exception("Не удалось обновить контролы музыки для guild=%s", getattr(player.guild, "id", None))
+        except Exception:
+            pass
+
+        await asyncio.sleep(3)
+
 # ================= SETUP =================
 
 async def setup_hook():
@@ -181,6 +211,10 @@ async def setup_hook():
 
     # Start cleanup task for edit_guard
     start_cleanup_task()
+
+    global _music_update_task
+    if _music_update_task is None or _music_update_task.done():
+        _music_update_task = asyncio.create_task(music_controls_updater())
 
 bot.setup_hook = setup_hook
 
