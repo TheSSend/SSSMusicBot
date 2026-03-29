@@ -368,7 +368,29 @@ async def play_music(interaction: discord.Interaction, query: str):
         ):
             normalized = f"ytsearch:{normalized}"
 
-        results = await wavelink.Pool.fetch_tracks(normalized, node=node)
+        try:
+            results = await wavelink.Pool.fetch_tracks(normalized, node=node)
+        except wavelink.LavalinkLoadException as exc:
+            logger.warning("Search failed %s: %s", normalized, exc)
+            await interaction.followup.send(
+                "❌ Не удалось загрузить треки, попробуй другой запрос.",
+                ephemeral=True
+            )
+            return
+        except wavelink.LavalinkException as exc:
+            logger.exception("Node load failed %s", normalized)
+            await interaction.followup.send(
+                "❌ Ошибка поиска на стороне Lavalink — проверь лог",
+                ephemeral=True
+            )
+            return
+
+        logger.info(
+            "Search results for %s: type=%s len=%s",
+            normalized,
+            type(results).__name__,
+            len(results) if hasattr(results, "__len__") else "?",
+        )
 
         if not results:
             await interaction.followup.send("❌ Ничего не найдено")
