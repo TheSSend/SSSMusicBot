@@ -157,7 +157,16 @@ class MusicControls(discord.ui.View):
         await interaction.response.defer()
 
         if self.player:
-            await self.player.stop()
+            try:
+                await self.player.stop()
+            except LavalinkException:
+                logger.warning("Skip failed because Lavalink lost the player; disconnecting locally")
+                try:
+                    await self.player.disconnect()
+                except Exception:
+                    logger.exception("Failed to disconnect player after skip error")
+            except Exception:
+                logger.exception("Unexpected error while skipping track")
 
     @discord.ui.button(label="📜", style=discord.ButtonStyle.success)
     async def queue(self, interaction: discord.Interaction, _):
@@ -181,7 +190,12 @@ class MusicControls(discord.ui.View):
         await interaction.response.defer()
 
         if self.player:
-            await self.player.disconnect()
+            try:
+                await self.player.disconnect()
+            except LavalinkException:
+                logger.warning("Stop failed because Lavalink lost the player; forcing local cleanup")
+            except Exception:
+                logger.exception("Unexpected error while stopping player")
 
 
 # ================= START TRACK =================

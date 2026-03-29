@@ -287,6 +287,7 @@ class Signups(commands.Cog):
     async def restore_signups(self):
         await self.bot.wait_until_ready()
         data = load_data()
+        changed = False
 
         for msg_id, sign in data.items():
 
@@ -296,6 +297,11 @@ class Signups(commands.Cog):
 
             try:
                 message = await channel.fetch_message(int(msg_id))
+            except discord.NotFound:
+                logger.warning("Signup message %s was deleted, pruning record", msg_id)
+                data.pop(msg_id, None)
+                changed = True
+                continue
             except Exception:
                 logger.exception("Не удалось получить signup сообщение %s", msg_id)
                 continue
@@ -316,6 +322,9 @@ class Signups(commands.Cog):
 
             if not sign.get("closed"):
                 self.bot.loop.create_task(self.schedule_end(msg_id))
+
+        if changed:
+            save_data(data)
 
     async def schedule_end(self, msg_id):
 
@@ -352,6 +361,13 @@ class Signups(commands.Cog):
 
         try:
             msg = await channel.fetch_message(int(msg_id))
+        except discord.NotFound:
+            logger.warning("Signup message %s vanished during schedule_end, pruning record", msg_id)
+            async with data_lock:
+                data = load_data()
+                data.pop(msg_id, None)
+                save_data(data)
+            return
         except Exception:
             logger.exception("Не удалось получить signup сообщение для завершения %s", msg_id)
             return

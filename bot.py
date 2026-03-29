@@ -146,15 +146,6 @@ async def setup_hook():
         except Exception:
             logger.exception("Ошибка загрузки модуля %s", extension)
 
-    if os.getenv("FORUM_SEARCH_ENABLED", "0").lower() in {"1", "true", "yes", "on"}:
-        try:
-            await bot.load_extension("forum_search")
-            logger.info("Загружен модуль forum_search")
-        except Exception:
-            logger.exception("Ошибка загрузки модуля forum_search")
-    else:
-        logger.info("forum_search отключен через FORUM_SEARCH_ENABLED")
-
     # ================= SYNC =================
 
     try:
@@ -452,6 +443,15 @@ def sanitize_search_text(value: str) -> str:
     return cleaned.strip()
 
 
+def is_stream_url(url: str) -> bool:
+
+    lowered = url.lower()
+    return all(
+        marker not in lowered
+        for marker in ("storyboard", "thumbnail", "i.ytimg.com/sb/")
+    )
+
+
 async def build_search_candidates(query: str) -> list[str]:
 
     normalized = normalize_query(query)
@@ -540,15 +540,15 @@ async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None]:
         title = str(info.get("title") or "").strip() or None
 
         media_url = None
+        requested_downloads = info.get("requested_downloads") or []
+        for item in requested_downloads:
+            url = str((item or {}).get("url") or "").strip()
+            if url and is_stream_url(url):
+                media_url = url
+                break
+
         requested_formats = info.get("requested_formats") or []
         candidate_formats = requested_formats if requested_formats else (info.get("formats") or [])
-
-        def is_stream_url(url: str) -> bool:
-            lowered = url.lower()
-            return all(
-                marker not in lowered
-                for marker in ("storyboard", "thumbnail", "i.ytimg.com/sb/")
-            )
 
         best_score = -1
         for item in candidate_formats:
