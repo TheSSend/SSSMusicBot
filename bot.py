@@ -1,4 +1,5 @@
 import discord
+import aiohttp
 import wavelink
 import asyncio
 import os
@@ -6,6 +7,7 @@ import sys
 import logging
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
+from urllib.parse import urlparse
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -13,6 +15,14 @@ from music_core import MusicPlayer, start_track, send_control_message
 from edit_guard import safe_message_edit, start_cleanup_task
 
 logger = logging.getLogger(__name__)
+
+YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+}
 
 # ================= LOGGING =================
 
@@ -354,36 +364,22 @@ async def play_music(interaction: discord.Interaction, query: str):
 
         normalized = query.strip()
 
-        async def _search(prefix: str | None = None):
-            search_term = normalized if not prefix else f"{prefix}{normalized}"
-            return await wavelink.Pool.fetch_tracks(search_term, node=node)
-
         try:
-            results = await _search()
+            results = await fetch_best_tracks(node, normalized)
         except wavelink.LavalinkLoadException as exc:
             logger.warning("Search failed %s: %s", normalized, exc)
             await interaction.followup.send(
                 "❌ Не удалось загрузить треки, попробуй другой запрос.",
-                ephemeral=True
+                ephemeral=True,
             )
             return
         except wavelink.LavalinkException:
             logger.exception("Node load failed %s", normalized)
             await interaction.followup.send(
                 "❌ Ошибка поиска на стороне Lavalink — проверь лог",
-                ephemeral=True
+                ephemeral=True,
             )
             return
-
-        if not results and normalized:
-            results = await _search("ytsearch:")
-
-        logger.info(
-            "Search results for %s: type=%s len=%s",
-            normalized,
-            type(results).__name__,
-            len(results) if hasattr(results, "__len__") else "?",
-        )
 
         if not results:
             await interaction.followup.send("❌ Ничего не найдено")
@@ -424,6 +420,108 @@ async def play_music(interaction: discord.Interaction, query: str):
     except Exception as e:
         logger.exception("Ошибка при выполнении команды play")
         await interaction.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+
+
+def is_youtube_url(value: str) -> bool:
+
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+
+    return parsed.scheme in {"http", "https"} and parsed.netloc.lower() in YOUTUBE_HOSTS
+
+
+def normalize_query(query: str) -> str:
+
+    return query.strip()
+
+
+def sanitize_search_text(value: str) -> str:
+
+    cleaned = value.replace("-", " ")
+    cleaned = " ".join(cleaned.split())
+    return cleaned.strip()
+
+
+async def build_search_candidates(query: str) -> list[str]:
+
+    normalized = normalize_query(query)
+
+    if not normalized:
+        return []
+
+    candidates: list[str] = []
+
+    if is_youtube_url(normalized):
+        candidates.append(normalized)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://www.youtube.com/oembed",
+                    params={"url": normalized, "format": "json"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    if response.status == 200:
+                        payload = await response.json()
+                        title = str(payload.get("title", "")).strip()
+                        if title:
+                            cleaned_title = sanitize_search_text(title)
+                            candidates.append(f"ytmsearch:{title}")
+                            candidates.append(f"ytsearch:{title}")
+                            if cleaned_title != title:
+                                candidates.append(f"ytmsearch:{cleaned_title}")
+                                candidates.append(f"ytsearch:{cleaned_title}")
+        except Exception:
+            logger.exception("Не удалось получить oEmbed для YouTube URL")
+
+        return candidates
+
+    # Plain text query: try the music search first, then normal YouTube search.
+    sanitized = sanitize_search_text(normalized)
+
+    candidates.append(f"ytmsearch:{normalized}")
+    candidates.append(f"ytsearch:{normalized}")
+    if sanitized != normalized:
+        candidates.append(f"ytmsearch:{sanitized}")
+        candidates.append(f"ytsearch:{sanitized}")
+    candidates.append(f"scsearch:{normalized}")
+    return candidates
+
+
+async def fetch_best_tracks(node: wavelink.Node, query: str):
+
+    candidates = await build_search_candidates(query)
+    last_exc = None
+
+    for candidate in candidates:
+        logger.info("Searching Lavalink with %s", candidate)
+        try:
+            results = await wavelink.Pool.fetch_tracks(candidate, node=node)
+        except wavelink.LavalinkLoadException as exc:
+            last_exc = exc
+            logger.warning("Search failed %s: %s", candidate, exc)
+            continue
+        except wavelink.LavalinkException as exc:
+            last_exc = exc
+            logger.exception("Node load failed %s", candidate)
+            continue
+
+        logger.info(
+            "Search results for %s: type=%s len=%s",
+            candidate,
+            type(results).__name__,
+            len(results) if hasattr(results, "__len__") else "?",
+        )
+
+        if results:
+            return results
+
+    if last_exc is not None:
+        raise last_exc
+
+    return []
 
 # ================= RELOAD =================
 
