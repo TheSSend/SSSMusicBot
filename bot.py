@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-from music_core import MusicPlayer, start_track, send_control_message, build_embed, MusicControls, display_author
+from music_core import MusicPlayer, start_track, send_control_message, build_embed, MusicControls, display_author, send_temporary_followup
 from edit_guard import safe_message_edit, start_cleanup_task
 
 logger = logging.getLogger(__name__)
@@ -491,8 +491,10 @@ async def play_music(interaction: discord.Interaction, query: str):
 
             await player.queue.put_wait(track)
 
-            await interaction.followup.send(
-                f"🎵 Добавлено в очередь: **{track.title}**"
+            await send_temporary_followup(
+                interaction,
+                content=f"🎵 Добавлено в очередь: **{track.title}**",
+                delete_after=5,
             )
 
     except Exception as e:

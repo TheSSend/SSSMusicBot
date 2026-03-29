@@ -25,6 +25,15 @@ def display_author(value: str | None) -> str:
 
     return normalized or "Unknown artist"
 
+
+def display_requester(value) -> str:
+
+    if value is None:
+        return "Unknown requester"
+
+    name = getattr(value, "display_name", None) or getattr(value, "name", None) or str(value)
+    return " ".join(str(name).split()).strip() or "Unknown requester"
+
 # ================= PLAYER =================
 
 class MusicPlayer(wavelink.Player):
@@ -135,15 +144,24 @@ def build_embed(player: MusicPlayer):
 
     embed = discord.Embed(
         title="🎵 Сейчас играет",
-        description=(
-            f"**{track.title}**\n"
-            f"👤 {display_author(track.author)}\n\n"
-            f"`{elapsed//60:02}:{elapsed%60:02}` "
-            f"{bar} "
-            f"`{total//60:02}:{total%60:02}`"
-        ),
-        color=0x2ecc71
+        description=f"**{track.title}**",
+        color=0x57F287,
     )
+
+    embed.add_field(name="Исполнитель", value=display_author(track.author), inline=False)
+    embed.add_field(
+        name="Прогресс",
+        value=f"`{elapsed//60:02}:{elapsed%60:02}` {bar} `{total//60:02}:{total%60:02}`",
+        inline=False,
+    )
+
+    requester = getattr(track, "requester", None)
+    if requester is not None:
+        embed.set_footer(text=f"Запросил: {display_requester(requester)}")
+
+    artwork = getattr(track, "artwork", None)
+    if artwork:
+        embed.set_thumbnail(url=artwork)
 
     return embed
 
@@ -156,7 +174,7 @@ class MusicControls(discord.ui.View):
         super().__init__(timeout=None)
         self.player = player
 
-    @discord.ui.button(label="⏸", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Пауза", emoji="⏸️", style=discord.ButtonStyle.secondary, row=0)
     async def pause(self, interaction: discord.Interaction, _):
 
         if not self.player:
@@ -175,7 +193,7 @@ class MusicControls(discord.ui.View):
         except Exception:
             logger.exception("Unexpected error while toggling pause")
 
-    @discord.ui.button(label="⏭", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Следующий", emoji="⏭️", style=discord.ButtonStyle.primary, row=0)
     async def skip(self, interaction: discord.Interaction, _):
 
         await interaction.response.defer()
@@ -192,7 +210,7 @@ class MusicControls(discord.ui.View):
             except Exception:
                 logger.exception("Unexpected error while skipping track")
 
-    @discord.ui.button(label="📜", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Очередь", emoji="📜", style=discord.ButtonStyle.success, row=1)
     async def queue(self, interaction: discord.Interaction, _):
 
         await interaction.response.defer(ephemeral=True)
@@ -208,7 +226,7 @@ class MusicControls(discord.ui.View):
 
         await interaction.followup.send(text, ephemeral=True)
 
-    @discord.ui.button(label="⏹", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Стоп", emoji="⏹️", style=discord.ButtonStyle.danger, row=1)
     async def stop(self, interaction: discord.Interaction, _):
 
         await interaction.response.defer()
@@ -255,7 +273,7 @@ async def send_control_message(interaction: discord.Interaction, player: MusicPl
     embed = discord.Embed(
         title="🎵 Музыка",
         description="Загрузка...",
-        color=0x2ecc71
+        color=0x57F287,
     )
 
     message = await interaction.followup.send(
@@ -264,3 +282,27 @@ async def send_control_message(interaction: discord.Interaction, player: MusicPl
     )
 
     player.control_message = message
+
+
+async def send_temporary_followup(
+    interaction: discord.Interaction,
+    *,
+    content: str | None = None,
+    embed: discord.Embed | None = None,
+    view=None,
+    delete_after: int = 5,
+):
+
+    message = await interaction.followup.send(content=content, embed=embed, view=view, wait=True)
+
+    async def _delete_later():
+        try:
+            await asyncio.sleep(delete_after)
+            await message.delete()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Failed to delete temporary followup message")
+
+    asyncio.create_task(_delete_later())
+    return message

@@ -9,7 +9,7 @@ import logging
 from discord import app_commands
 from discord.ext import commands
 
-from music_core import MusicPlayer, start_track, send_control_message
+from music_core import MusicPlayer, start_track, send_control_message, send_temporary_followup
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
@@ -207,7 +207,7 @@ class OCRMusic(commands.Cog):
             color=0xf1c40f
         )
 
-        await interaction.followup.send(embed=embed)
+        await send_temporary_followup(interaction, embed=embed, delete_after=5)
 
 
 async def setup(bot):
