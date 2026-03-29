@@ -352,7 +352,7 @@ async def play_music(interaction: discord.Interaction, query: str):
 
         # ================= SEARCH =================
 
-        results = await wavelink.Playable.search(query)
+        results = await node.get_tracks(query)
 
         if not results:
             await interaction.followup.send("❌ Ничего не найдено")
