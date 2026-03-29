@@ -353,23 +353,13 @@ async def play_music(interaction: discord.Interaction, query: str):
         # ================= SEARCH =================
 
         normalized = query.strip()
-        if normalized and not normalized.lower().startswith(
-            (
-                "ytsearch:",
-                "scsearch:",
-                "ytmsearch:",
-                "search:",
-                "https://",
-                "http://",
-                "spotify:",
-                "soundcloud:",
-                "bandcamp:",
-            )
-        ):
-            normalized = f"ytsearch:{normalized}"
+
+        async def _search(prefix: str | None = None):
+            search_term = normalized if not prefix else f"{prefix}{normalized}"
+            return await wavelink.Pool.fetch_tracks(search_term, node=node)
 
         try:
-            results = await wavelink.Pool.fetch_tracks(normalized, node=node)
+            results = await _search()
         except wavelink.LavalinkLoadException as exc:
             logger.warning("Search failed %s: %s", normalized, exc)
             await interaction.followup.send(
@@ -377,13 +367,16 @@ async def play_music(interaction: discord.Interaction, query: str):
                 ephemeral=True
             )
             return
-        except wavelink.LavalinkException as exc:
+        except wavelink.LavalinkException:
             logger.exception("Node load failed %s", normalized)
             await interaction.followup.send(
                 "❌ Ошибка поиска на стороне Lavalink — проверь лог",
                 ephemeral=True
             )
             return
+
+        if not results and normalized:
+            results = await _search("ytsearch:")
 
         logger.info(
             "Search results for %s: type=%s len=%s",
