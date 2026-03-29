@@ -139,13 +139,21 @@ async def setup_hook():
         "ocr_module",
         "signups",
         "joinfamily",
-        "forum_search",
     ):
         try:
             await bot.load_extension(extension)
             logger.info("Загружен модуль %s", extension)
         except Exception:
             logger.exception("Ошибка загрузки модуля %s", extension)
+
+    if os.getenv("FORUM_SEARCH_ENABLED", "0").lower() in {"1", "true", "yes", "on"}:
+        try:
+            await bot.load_extension("forum_search")
+            logger.info("Загружен модуль forum_search")
+        except Exception:
+            logger.exception("Ошибка загрузки модуля forum_search")
+    else:
+        logger.info("forum_search отключен через FORUM_SEARCH_ENABLED")
 
     # ================= SYNC =================
 
@@ -513,6 +521,7 @@ async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None]:
         "skip_download": True,
         "noplaylist": True,
         "extract_flat": False,
+        "format": "bestaudio[protocol^=http]/bestaudio/best",
     }
 
     def _extract():
@@ -529,22 +538,42 @@ async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None]:
             info = entries[0]
 
         title = str(info.get("title") or "").strip() or None
-        formats = info.get("formats") or []
-
-        best_audio = None
-        for item in formats:
-            if not item:
-                continue
-            if item.get("acodec") and item.get("url"):
-                best_audio = item
-                if item.get("vcodec") == "none":
-                    break
 
         media_url = None
-        if best_audio is not None:
-            media_url = best_audio.get("url")
-        else:
-            media_url = info.get("url")
+        requested_formats = info.get("requested_formats") or []
+        candidate_formats = requested_formats if requested_formats else (info.get("formats") or [])
+
+        def is_stream_url(url: str) -> bool:
+            lowered = url.lower()
+            return all(
+                marker not in lowered
+                for marker in ("storyboard", "thumbnail", "i.ytimg.com/sb/")
+            )
+
+        best_score = -1
+        for item in candidate_formats:
+            if not item:
+                continue
+
+            url = str(item.get("url") or "").strip()
+            if not url or not is_stream_url(url):
+                continue
+
+            if item.get("acodec") in (None, "none"):
+                continue
+
+            score = int(item.get("abr") or item.get("tbr") or 0)
+            if item.get("vcodec") == "none":
+                score += 10000
+
+            if score > best_score:
+                best_score = score
+                media_url = url
+
+        if media_url is None:
+            fallback_url = str(info.get("url") or "").strip()
+            if fallback_url and is_stream_url(fallback_url):
+                media_url = fallback_url
 
         return media_url, title
 
