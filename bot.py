@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-from music_core import MusicPlayer, start_track, send_control_message, build_embed, MusicControls
+from music_core import MusicPlayer, start_track, send_control_message, build_embed, MusicControls, display_author
 from edit_guard import safe_message_edit, start_cleanup_task
 
 logger = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ async def update_presence(player=None):
                 status=discord.Status.online,
                 activity=discord.Activity(
                     type=discord.ActivityType.listening,
-                    name=f"{player.current_track.title} — {player.current_track.author}"
+                    name=f"{player.current_track.title} — {display_author(player.current_track.author)}"
                 )
             )
         except Exception:

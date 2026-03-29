@@ -10,6 +10,21 @@ from edit_guard import safe_message_edit
 
 logger = logging.getLogger(__name__)
 
+
+def display_author(value: str | None) -> str:
+
+    if not value:
+        return "Unknown artist"
+
+    normalized = " ".join(value.split()).strip()
+
+    for suffix in (" - Topic", " – Topic", " — Topic"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)].strip()
+            break
+
+    return normalized or "Unknown artist"
+
 # ================= PLAYER =================
 
 class MusicPlayer(wavelink.Player):
@@ -122,7 +137,7 @@ def build_embed(player: MusicPlayer):
         title="🎵 Сейчас играет",
         description=(
             f"**{track.title}**\n"
-            f"👤 {track.author}\n\n"
+            f"👤 {display_author(track.author)}\n\n"
             f"`{elapsed//60:02}:{elapsed%60:02}` "
             f"{bar} "
             f"`{total//60:02}:{total%60:02}`"
