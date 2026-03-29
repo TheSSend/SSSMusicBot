@@ -120,6 +120,14 @@ def progress_bar(elapsed, total):
     return "▰" * filled + "▱" * (10 - filled)
 
 
+def embed_color(player: MusicPlayer) -> int:
+
+    if getattr(player, "paused", False):
+        return 0xF1C40F
+
+    return 0x57F287
+
+
 # ================= EMBED =================
 
 def build_embed(player: MusicPlayer):
@@ -148,7 +156,7 @@ def build_embed(player: MusicPlayer):
 
     embed = discord.Embed(
         title="🎵 Сейчас играет",
-        color=0x57F287,
+        color=embed_color(player),
     )
 
     embed.add_field(name="Трек", value=f"**{track.title}**", inline=False)
@@ -205,6 +213,16 @@ class MusicControls(discord.ui.View):
                 logger.exception("Failed to disconnect player after pause error")
         except Exception:
             logger.exception("Unexpected error while toggling pause")
+        else:
+            if self.player.control_message:
+                try:
+                    await safe_message_edit(
+                        self.player.control_message,
+                        embed=build_embed(self.player),
+                        view=MusicControls(self.player),
+                    )
+                except Exception:
+                    logger.exception("Failed to refresh control message after pause toggle")
 
     @discord.ui.button(label="Следующий", emoji="⏭️", style=discord.ButtonStyle.primary, row=0)
     async def skip(self, interaction: discord.Interaction, _):

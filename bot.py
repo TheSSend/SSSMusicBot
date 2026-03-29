@@ -481,8 +481,10 @@ async def play_music(interaction: discord.Interaction, query: str):
 
             await update_presence(player)
 
-            await interaction.followup.send(
-                f"🎵 Сейчас играет: **{track.title}**"
+            await send_temporary_followup(
+                interaction,
+                content=f"🎵 Сейчас играет: **{track.title}**",
+                delete_after=5,
             )
 
         else:
