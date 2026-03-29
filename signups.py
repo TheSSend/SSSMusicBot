@@ -289,7 +289,7 @@ class Signups(commands.Cog):
         data = load_data()
         changed = False
 
-        for msg_id, sign in data.items():
+        for msg_id, sign in list(data.items()):
 
             channel = self.bot.get_channel(sign["channel_id"])
             if not channel:

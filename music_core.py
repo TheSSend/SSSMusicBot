@@ -149,7 +149,16 @@ class MusicControls(discord.ui.View):
 
         await interaction.response.defer()
 
-        await self.player.pause(not self.player.paused)
+        try:
+            await self.player.pause(not self.player.paused)
+        except LavalinkException:
+            logger.warning("Pause failed because Lavalink lost the player; disconnecting locally")
+            try:
+                await self.player.disconnect()
+            except Exception:
+                logger.exception("Failed to disconnect player after pause error")
+        except Exception:
+            logger.exception("Unexpected error while toggling pause")
 
     @discord.ui.button(label="⏭", style=discord.ButtonStyle.primary)
     async def skip(self, interaction: discord.Interaction, _):

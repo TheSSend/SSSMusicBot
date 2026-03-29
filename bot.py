@@ -498,17 +498,17 @@ async def build_search_candidates(query: str) -> list[str]:
     return candidates
 
 
-async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None]:
+async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None, str | None]:
 
     try:
         import yt_dlp
     except ImportError:
         logger.info("yt-dlp is not installed, skipping direct media fallback")
-        return None, None
+        return None, None, None
 
     normalized = normalize_query(query)
     if not normalized:
-        return None, None
+        return None, None, None
 
     if is_youtube_url(normalized):
         target = normalized
@@ -529,15 +529,16 @@ async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None]:
             info = ydl.extract_info(target, download=False)
 
         if not info:
-            return None, None
+            return None, None, None
 
         if info.get("entries"):
             entries = [entry for entry in info["entries"] if entry]
             if not entries:
-                return None, None
+                return None, None, None
             info = entries[0]
 
         title = str(info.get("title") or "").strip() or None
+        author = str(info.get("uploader") or info.get("channel") or info.get("artist") or "").strip() or None
 
         media_url = None
         requested_downloads = info.get("requested_downloads") or []
@@ -575,13 +576,34 @@ async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None]:
             if fallback_url and is_stream_url(fallback_url):
                 media_url = fallback_url
 
-        return media_url, title
+        return media_url, title, author
 
     try:
         return await asyncio.to_thread(_extract)
     except Exception:
         logger.exception("yt-dlp fallback failed for %s", normalized)
-        return None, None
+        return None, None, None
+
+
+def apply_track_metadata(track, *, title: str | None = None, author: str | None = None, uri: str | None = None):
+
+    if title:
+        try:
+            track._title = title
+        except Exception:
+            pass
+
+    if author:
+        try:
+            track._author = author
+        except Exception:
+            pass
+
+    if uri:
+        try:
+            track._uri = uri
+        except Exception:
+            pass
 
 
 async def fetch_best_tracks(node: wavelink.Node, query: str):
@@ -612,7 +634,7 @@ async def fetch_best_tracks(node: wavelink.Node, query: str):
         if results:
             return results
 
-    media_url, title = await resolve_with_ytdlp(query)
+    media_url, title, author = await resolve_with_ytdlp(query)
     if media_url:
         logger.info("yt-dlp fallback resolved media url for %s -> %s", query, title or media_url)
 
@@ -630,6 +652,12 @@ async def fetch_best_tracks(node: wavelink.Node, query: str):
                 len(results) if hasattr(results, "__len__") else "?",
             )
             if results:
+                if isinstance(results, list):
+                    for track in results:
+                        apply_track_metadata(track, title=title, author=author, uri=media_url)
+                else:
+                    for track in getattr(results, "tracks", []):
+                        apply_track_metadata(track, title=title, author=author, uri=media_url)
                 return results
 
     if last_exc is not None:
