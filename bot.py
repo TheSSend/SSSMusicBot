@@ -5,7 +5,6 @@ import asyncio
 import os
 import sys
 import logging
-import tempfile
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
@@ -478,13 +477,16 @@ def sanitize_search_text(value: str) -> str:
     return cleaned.strip()
 
 
-def is_stream_url(url: str) -> bool:
+def normalize_author(value: str | None) -> str | None:
 
-    lowered = url.lower()
-    return all(
-        marker not in lowered
-        for marker in ("storyboard", "thumbnail", "i.ytimg.com/sb/")
-    )
+    if not value:
+        return None
+
+    cleaned = sanitize_search_text(value)
+    if cleaned.endswith(" Topic"):
+        cleaned = cleaned[:-6].strip()
+
+    return cleaned or None
 
 
 async def build_search_candidates(query: str) -> list[str]:
@@ -497,37 +499,12 @@ async def build_search_candidates(query: str) -> list[str]:
     candidates: list[str] = []
 
     if is_youtube_url(normalized):
-        candidates.append(normalized)
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    "https://www.youtube.com/oembed",
-                    params={"url": normalized, "format": "json"},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as response:
-                    if response.status == 200:
-                        payload = await response.json()
-                        title = str(payload.get("title", "")).strip()
-                        if title:
-                            cleaned_title = sanitize_search_text(title)
-                            candidates.append(f"ytmsearch:{title}")
-                            candidates.append(f"ytsearch:{title}")
-                            if cleaned_title != title:
-                                candidates.append(f"ytmsearch:{cleaned_title}")
-                                candidates.append(f"ytsearch:{cleaned_title}")
-        except Exception:
-            logger.exception("Не удалось получить oEmbed для YouTube URL")
-
         return candidates
 
-    # Plain text query: try the music search first, then normal YouTube search.
     sanitized = sanitize_search_text(normalized)
 
-    candidates.append(f"ytmsearch:{normalized}")
     candidates.append(f"ytsearch:{normalized}")
     if sanitized != normalized:
-        candidates.append(f"ytmsearch:{sanitized}")
         candidates.append(f"ytsearch:{sanitized}")
     candidates.append(f"scsearch:{normalized}")
     return candidates
@@ -535,36 +512,41 @@ async def build_search_candidates(query: str) -> list[str]:
 
 def build_metadata_candidates(title: str | None, author: str | None) -> list[str]:
 
-    parts = [part for part in [author, title] if part]
-    if not parts:
-        return []
-
-    combined = sanitize_search_text(" ".join(parts))
     candidates: list[str] = []
 
-    if combined:
-        candidates.append(f"ytmsearch:{combined}")
-        candidates.append(f"ytsearch:{combined}")
+    title_clean = sanitize_search_text(title or "") or None
+    author_clean = normalize_author(author)
 
-    if title:
-        cleaned_title = sanitize_search_text(title)
-        candidates.append(f"ytmsearch:{cleaned_title}")
-        candidates.append(f"ytsearch:{cleaned_title}")
+    combos = []
+    if title_clean and author_clean:
+        combos.append(f"{title_clean} {author_clean}")
+        combos.append(f"{author_clean} {title_clean}")
+    if title_clean:
+        combos.append(title_clean)
+
+    seen = set()
+    for combined in combos:
+        normalized = sanitize_search_text(combined)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        candidates.append(f"ytsearch:{normalized}")
+        candidates.append(f"scsearch:{normalized}")
 
     return candidates
 
 
-async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None, str | None, str | None]:
+async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None]:
 
     try:
         import yt_dlp
     except ImportError:
         logger.info("yt-dlp is not installed, skipping direct media fallback")
-        return None, None, None, None
+        return None, None
 
     normalized = normalize_query(query)
     if not normalized:
-        return None, None, None, None
+        return None, None
 
     if is_youtube_url(normalized):
         target = normalized
@@ -585,86 +567,26 @@ async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None, str | 
             info = ydl.extract_info(target, download=False)
 
         if not info:
-            return None, None, None, None
+            return None, None
 
         if info.get("entries"):
             entries = [entry for entry in info["entries"] if entry]
             if not entries:
-                return None, None, None, None
+                return None, None
             info = entries[0]
 
         title = str(info.get("title") or "").strip() or None
         author = str(info.get("uploader") or info.get("channel") or info.get("artist") or "").strip() or None
-
-        media_url = None
-        requested_downloads = info.get("requested_downloads") or []
-        for item in requested_downloads:
-            url = str((item or {}).get("url") or "").strip()
-            if url and is_stream_url(url):
-                media_url = url
-                break
-
-        requested_formats = info.get("requested_formats") or []
-        candidate_formats = requested_formats if requested_formats else (info.get("formats") or [])
-
-        best_score = -1
-        for item in candidate_formats:
-            if not item:
-                continue
-
-            url = str(item.get("url") or "").strip()
-            if not url or not is_stream_url(url):
-                continue
-
-            if item.get("acodec") in (None, "none"):
-                continue
-
-            score = int(item.get("abr") or item.get("tbr") or 0)
-            if item.get("vcodec") == "none":
-                score += 10000
-
-            if score > best_score:
-                best_score = score
-                media_url = url
-
-        if media_url is None:
-            fallback_url = str(info.get("url") or "").strip()
-            if fallback_url and is_stream_url(fallback_url):
-                media_url = fallback_url
-
-        local_path = None
-        try:
-            temp_dir = Path(tempfile.mkdtemp(prefix="sssmusicbot-yt-"))
-            download_opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "format": "bestaudio/best",
-                "outtmpl": str(temp_dir / "%(title).80s-%(id)s.%(ext)s"),
-                "restrictfilenames": True,
-                "cachedir": False,
-            }
-
-            with yt_dlp.YoutubeDL(download_opts) as ydl:
-                downloaded = ydl.extract_info(target, download=True)
-
-            if downloaded:
-                local_path = ydl.prepare_filename(downloaded)
-                if local_path and not Path(local_path).exists():
-                    local_path = None
-        except Exception:
-            logger.exception("yt-dlp local download fallback failed for %s", normalized)
-
-        return media_url, title, author, local_path
+        return title, author
 
     try:
         return await asyncio.to_thread(_extract)
     except Exception:
         logger.exception("yt-dlp fallback failed for %s", normalized)
-        return None, None, None, None
+        return None, None
 
 
-def apply_track_metadata(track, *, title: str | None = None, author: str | None = None, uri: str | None = None):
+def apply_track_metadata(track, *, title: str | None = None, author: str | None = None):
 
     if title:
         try:
@@ -677,13 +599,6 @@ def apply_track_metadata(track, *, title: str | None = None, author: str | None 
             track._author = author
         except Exception:
             pass
-
-    if uri:
-        try:
-            track._uri = uri
-        except Exception:
-            pass
-
 
 async def fetch_best_tracks(node: wavelink.Node, query: str):
 
@@ -713,33 +628,8 @@ async def fetch_best_tracks(node: wavelink.Node, query: str):
         if results:
             return results
 
-    media_url, title, author, local_path = await resolve_with_ytdlp(query)
+    title, author = await resolve_with_ytdlp(query)
     metadata_candidates = build_metadata_candidates(title, author)
-
-    if local_path:
-        file_url = Path(local_path).as_uri()
-        logger.info("yt-dlp local file fallback for %s -> %s", query, file_url)
-        try:
-            results = await wavelink.Pool.fetch_tracks(file_url, node=node)
-        except wavelink.LavalinkLoadException as exc:
-            logger.warning("Local file fallback failed %s: %s", file_url, exc)
-        except wavelink.LavalinkException:
-            logger.exception("Local file fallback node error %s", file_url)
-        else:
-            logger.info(
-                "Search results for yt-dlp local fallback %s: type=%s len=%s",
-                title or query,
-                type(results).__name__,
-                len(results) if hasattr(results, "__len__") else "?",
-            )
-            if results:
-                if isinstance(results, list):
-                    for track in results:
-                        apply_track_metadata(track, title=title, author=author, uri=file_url)
-                else:
-                    for track in getattr(results, "tracks", []):
-                        apply_track_metadata(track, title=title, author=author, uri=file_url)
-                return results
 
     for candidate in metadata_candidates:
         logger.info("Searching Lavalink with yt-dlp metadata %s", candidate)
@@ -762,30 +652,8 @@ async def fetch_best_tracks(node: wavelink.Node, query: str):
         if results:
             return results
 
-    if media_url:
-        logger.info("yt-dlp fallback resolved media url for %s -> %s", query, title or media_url)
-
-        try:
-            results = await wavelink.Pool.fetch_tracks(media_url, node=node)
-        except wavelink.LavalinkLoadException as exc:
-            logger.warning("Direct media fallback failed %s: %s", media_url, exc)
-        except wavelink.LavalinkException:
-            logger.exception("Direct media fallback node error %s", media_url)
-        else:
-            logger.info(
-                "Search results for yt-dlp fallback %s: type=%s len=%s",
-                title or query,
-                type(results).__name__,
-                len(results) if hasattr(results, "__len__") else "?",
-            )
-            if results:
-                if isinstance(results, list):
-                    for track in results:
-                        apply_track_metadata(track, title=title, author=author, uri=media_url)
-                else:
-                    for track in getattr(results, "tracks", []):
-                        apply_track_metadata(track, title=title, author=author, uri=media_url)
-                return results
+    if title or author:
+        logger.info("yt-dlp metadata for %s -> title=%s author=%s", query, title, author)
 
     if last_exc is not None:
         raise last_exc

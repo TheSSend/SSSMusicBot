@@ -131,7 +131,7 @@ sudo journalctl -u musicbot -f
 - `lavalink/application.yml.example` - example Lavalink config
 - `.env.example` - example environment variables
 
-If YouTube direct-stream playback is unstable, keep `lavalink.server.sources.local: true` and allow the bot to use the local-file fallback.
+For youtube-source plugin based playback, use `lavalink.server.sources.youtube: false` and `plugins.youtube.enabled: true`.
 
 ## Notes For GitHub
 
