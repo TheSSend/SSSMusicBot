@@ -25,6 +25,7 @@ YOUTUBE_HOSTS = {
 }
 
 _music_update_task: asyncio.Task | None = None
+_idle_disconnect_tasks: dict[int, asyncio.Task] = {}
 
 # ================= LOGGING =================
 
@@ -128,6 +129,43 @@ async def update_presence(player=None):
             )
         except Exception:
             logger.exception("Не удалось обновить стандартный presence")
+
+
+def cancel_idle_disconnect(player_or_guild_id):
+
+    guild_id = player_or_guild_id
+    if hasattr(player_or_guild_id, "guild") and getattr(player_or_guild_id.guild, "id", None):
+        guild_id = player_or_guild_id.guild.id
+
+    task = _idle_disconnect_tasks.pop(guild_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+def schedule_idle_disconnect(player: MusicPlayer, delay: int = 10):
+
+    guild_id = getattr(player.guild, "id", None)
+    if guild_id is None:
+        return
+
+    cancel_idle_disconnect(guild_id)
+
+    async def _runner():
+        try:
+            await asyncio.sleep(delay)
+            if player.is_connected() and player.queue.is_empty and not player.playing:
+                try:
+                    await player.disconnect(force=True)
+                except Exception:
+                    logger.exception("Failed to disconnect idle player for guild=%s", guild_id)
+        except asyncio.CancelledError:
+            return
+        finally:
+            current = _idle_disconnect_tasks.get(guild_id)
+            if current is asyncio.current_task():
+                _idle_disconnect_tasks.pop(guild_id, None)
+
+    _idle_disconnect_tasks[guild_id] = asyncio.create_task(_runner())
 
 
 async def music_controls_updater():
@@ -249,6 +287,8 @@ async def on_track_end(payload: wavelink.TrackEndEventPayload):
 
     if not player.queue.is_empty:
 
+        cancel_idle_disconnect(player)
+
         next_track = await player.queue.get_wait()
 
         await start_track(player, next_track, False)
@@ -262,6 +302,7 @@ async def on_track_end(payload: wavelink.TrackEndEventPayload):
     player.track_start_time = None
 
     await update_presence(None)
+    schedule_idle_disconnect(player, delay=10)
 
 # ================= PLAYER DESTROY =================
 
@@ -287,7 +328,7 @@ async def play(interaction: discord.Interaction, query: str):
         )
         return
 
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    await interaction.response.defer(thinking=True)
     await play_music(interaction, query)
 
 # ================= PLAY LOGIC =================
@@ -429,6 +470,8 @@ async def play_music(interaction: discord.Interaction, query: str):
 
         if not player.playing and not player.paused:
 
+            cancel_idle_disconnect(player)
+
             if not player.control_message:
                 await send_control_message(interaction, player)
 
@@ -443,6 +486,8 @@ async def play_music(interaction: discord.Interaction, query: str):
             )
 
         else:
+
+            cancel_idle_disconnect(player)
 
             await player.queue.put_wait(track)
 
