@@ -48,7 +48,7 @@ lavalink:
 
 plugins:
   youtube:
-    enabled: true
+    enabled: false
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
