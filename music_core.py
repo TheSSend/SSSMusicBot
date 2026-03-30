@@ -230,6 +230,10 @@ class MusicControls(discord.ui.View):
         await interaction.response.defer()
 
         if self.player:
+            if self.player.queue.is_empty:
+                await interaction.followup.send("📭 Очередь пуста", ephemeral=True)
+                return
+
             try:
                 await self.player.stop()
             except LavalinkException:
@@ -263,6 +267,18 @@ class MusicControls(discord.ui.View):
         await interaction.response.defer()
 
         if self.player:
+            control_message = getattr(self.player, "control_message", None)
+
+            if control_message is not None:
+                try:
+                    await control_message.delete()
+                except discord.NotFound:
+                    pass
+                except Exception:
+                    logger.exception("Unexpected error while deleting control message on stop")
+                finally:
+                    self.player.control_message = None
+
             try:
                 await self.player.disconnect()
             except LavalinkException:
