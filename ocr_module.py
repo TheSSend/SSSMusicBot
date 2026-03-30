@@ -259,6 +259,21 @@ def replace_confusable_latin_with_cyrillic(value: str) -> str:
     return value.translate(translation)
 
 
+def aggressive_ocr_title_guess(value: str) -> str:
+
+    translation = str.maketrans({
+        "M": "И", "m": "и",
+        "r": "г", "R": "Я",
+        "u": "и", "U": "И",
+        "T": "т", "t": "т",
+        "A": "Д", "a": "а",
+        "K": "К", "k": "к",
+        "H": "Н", "h": "н",
+        "N": "П", "n": "п",
+    })
+    return replace_confusable_latin_with_cyrillic(value).translate(translation)
+
+
 def build_match_text(value: str) -> str:
 
     value = normalize_ocr_text(value)
@@ -267,6 +282,20 @@ def build_match_text(value: str) -> str:
     value = re.sub(r"[^\w\s]", " ", value)
     value = re.sub(r"\s+", " ", value)
     return value.strip()
+
+
+def build_title_candidates(value: str) -> list[str]:
+
+    candidates = []
+    for candidate in (
+        build_match_text(value),
+        build_match_text(replace_confusable_latin_with_cyrillic(value)),
+        build_match_text(aggressive_ocr_title_guess(value)),
+    ):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    return candidates
 
 
 def compact_match_text(value: str) -> str:
@@ -311,16 +340,17 @@ def clean_title_extras(value: str) -> str:
 
 def score_track_match(track, title: str, artist: str) -> float:
 
-    expected_title = build_match_text(title)
+    title_candidates = build_title_candidates(title)
+    expected_title = title_candidates[0] if title_candidates else ""
     expected_artist = build_match_text(artist)
     actual_title = build_match_text(getattr(track, "title", "") or "")
     actual_artist = build_match_text(getattr(track, "author", "") or "")
-    compact_expected_title = compact_match_text(title)
+    compact_expected_titles = [candidate.replace(" ", "") for candidate in title_candidates]
     compact_actual_title = compact_match_text(getattr(track, "title", "") or "")
     cleaned_actual_title = clean_title_extras(getattr(track, "title", "") or "")
-    cleaned_actual_title_score = similarity_score(expected_title, cleaned_actual_title)
+    cleaned_actual_title_score = max((similarity_score(candidate, cleaned_actual_title) for candidate in title_candidates), default=0.0)
 
-    title_score = similarity_score(expected_title, actual_title)
+    title_score = max((similarity_score(candidate, actual_title) for candidate in title_candidates), default=0.0)
     artist_score = similarity_score(expected_artist, actual_artist)
 
     title_tokens = set(expected_title.split())
@@ -344,11 +374,12 @@ def score_track_match(track, title: str, artist: str) -> float:
 
     extra_word_penalty = max(0, len(actual_title.split()) - len(cleaned_actual_title.split())) * 0.05
 
-    if compact_expected_title and compact_expected_title in compact_actual_title:
-        clean_title_bonus += 0.16
+    for compact_expected_title in compact_expected_titles:
+        if compact_expected_title and compact_expected_title in compact_actual_title:
+            clean_title_bonus = max(clean_title_bonus, 0.16)
 
-    if compact_expected_title and compact_expected_title == compact_match_text(cleaned_actual_title):
-        clean_title_bonus += 0.2
+        if compact_expected_title and compact_expected_title == compact_match_text(cleaned_actual_title):
+            clean_title_bonus = max(clean_title_bonus, 0.36)
 
     return (
         (title_score * 0.3)
@@ -371,15 +402,18 @@ def build_ocr_search_queries(title: str, artist: str) -> list[str]:
     title_clean = normalize_ocr_text(raw_title)
     artist_clean = normalize_ocr_text(raw_artist)
     title_cyr = replace_confusable_latin_with_cyrillic(title_clean)
+    title_guess = aggressive_ocr_title_guess(title_clean)
     artist_cyr = replace_confusable_latin_with_cyrillic(artist_clean)
 
     variants = [
         f"{title_clean} {artist_clean}",
         title_clean,
+        title_guess,
         artist_clean,
         f"{artist_clean} {title_clean}",
         f"{title_cyr} {artist_cyr}",
         title_cyr,
+        title_guess + (f" {artist_cyr}" if artist_cyr else ""),
         artist_cyr,
         f"{artist_cyr} {title_cyr}",
         f"{raw_title} {raw_artist}",
