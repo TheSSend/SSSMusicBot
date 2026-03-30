@@ -49,9 +49,23 @@ def _prepare_ocr_image(source_path: str) -> str:
             return tmp.name
 
 
-def _run_ocr(engine, path: str) -> list[str]:
+def _prepare_ocr_binary_image(source_path: str) -> str:
 
-    result, _elapsed = engine(path)
+    with Image.open(source_path) as image:
+        prepared = image.convert("L")
+        prepared.thumbnail((OCR_MAX_SIDE, OCR_MAX_SIDE), Image.Resampling.LANCZOS)
+        prepared = ImageOps.autocontrast(prepared)
+        prepared = prepared.resize((prepared.width * 2, prepared.height * 2), Image.Resampling.LANCZOS)
+        prepared = prepared.point(lambda px: 255 if px > 150 else 0)
+        prepared = ImageOps.invert(prepared)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            prepared.save(tmp.name, format="PNG", optimize=True)
+            return tmp.name
+
+
+def _extract_lines_from_ocr_result(result) -> list[str]:
+
     if not result:
         return []
 
@@ -116,6 +130,43 @@ def _run_ocr(engine, path: str) -> list[str]:
     return lines
 
 
+def line_quality_score(value: str) -> int:
+
+    cyr = sum(1 for ch in value if "а" <= ch.lower() <= "я" or ch.lower() == "ё")
+    lat = sum(1 for ch in value if "a" <= ch.lower() <= "z")
+    digits = sum(1 for ch in value if ch.isdigit())
+    spaces = value.count(" ")
+    return (cyr * 3) + lat + digits - spaces
+
+
+def merge_ocr_lines(primary: list[str], secondary: list[str]) -> list[str]:
+
+    if not secondary:
+        return primary
+
+    if len(primary) != len(secondary):
+        return secondary if len(secondary) > len(primary) else primary
+
+    merged = []
+    for first, second in zip(primary, secondary):
+        merged.append(second if line_quality_score(second) > line_quality_score(first) else first)
+
+    return merged
+
+
+def _run_ocr(engine, path: str, binary_path: str | None = None) -> list[str]:
+
+    result, _elapsed = engine(path)
+    lines = _extract_lines_from_ocr_result(result)
+
+    if binary_path is None:
+        return lines
+
+    binary_result, _elapsed = engine(binary_path)
+    binary_lines = _extract_lines_from_ocr_result(binary_result)
+    return merge_ocr_lines(lines, binary_lines)
+
+
 async def get_ocr_engine():
     global ocr_engine
 
@@ -136,17 +187,20 @@ async def get_ocr_engine():
 async def run_ocr(path: str) -> list[str]:
 
     prepared_path = None
+    binary_path = None
 
     try:
         prepared_path = await asyncio.to_thread(_prepare_ocr_image, path)
+        binary_path = await asyncio.to_thread(_prepare_ocr_binary_image, path)
         engine = await get_ocr_engine()
-        return await asyncio.to_thread(_run_ocr, engine, prepared_path)
+        return await asyncio.to_thread(_run_ocr, engine, prepared_path, binary_path)
     finally:
-        if prepared_path and os.path.exists(prepared_path):
-            try:
-                os.remove(prepared_path)
-            except OSError:
-                logger.warning("Не удалось удалить временный OCR-prep файл: %s", prepared_path)
+        for temp_path in (prepared_path, binary_path):
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    logger.warning("Не удалось удалить временный OCR-prep файл: %s", temp_path)
 
 
 def extract_tracks(lines):
