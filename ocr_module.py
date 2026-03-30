@@ -1,111 +1,60 @@
 import asyncio
+import json
 import logging
 import os
 import re
+import sys
 import tempfile
 
 import discord
 import wavelink
 
-from PIL import Image, ImageFilter, ImageOps
 from discord import app_commands
 from discord.ext import commands
 
 from music_core import MusicPlayer, start_track, send_control_message, send_temporary_followup
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
-OCR_TIMEOUT = 90
+OCR_TIMEOUT = 180
 SEARCH_TIMEOUT = 12
 MAX_OCR_TRACKS = 8
-OCR_MAX_SIDE = 1600
 MAX_SEARCH_CANDIDATES = 6
+OCR_WORKER_PATH = os.path.join(os.path.dirname(__file__), "ocr_worker.py")
 
 logger = logging.getLogger(__name__)
-
-reader = None
-reader_lock = asyncio.Lock()
-reader_preload_task: asyncio.Task | None = None
-
-
-def _build_reader():
-
-    import easyocr
-
-    return easyocr.Reader(["ru", "en"], gpu=False, verbose=False)
-
-
-def _prepare_ocr_image(source_path: str) -> str:
-
-    with Image.open(source_path) as image:
-        prepared = image.convert("RGB")
-        prepared.thumbnail((OCR_MAX_SIDE, OCR_MAX_SIDE), Image.Resampling.LANCZOS)
-        prepared = ImageOps.autocontrast(prepared)
-        prepared = prepared.filter(ImageFilter.SHARPEN)
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            prepared.save(tmp.name, format="PNG", optimize=True)
-            return tmp.name
-
-
-def _read_ocr_text(reader_obj, path: str):
-
-    return reader_obj.readtext(
-        path,
-        detail=0,
-        paragraph=False,
-        decoder="greedy",
-        beamWidth=1,
-        batch_size=1,
-        workers=0,
-        canvas_size=OCR_MAX_SIDE,
-        mag_ratio=1.0,
-        text_threshold=0.7,
-        low_text=0.4,
-        link_threshold=0.4,
-    )
-
-
-async def get_reader():
-    global reader
-
-    async with reader_lock:
-        if reader is None:
-            try:
-                reader = await asyncio.to_thread(_build_reader)
-            except ModuleNotFoundError as exc:
-                raise RuntimeError(
-                    "Модуль easyocr не установлен. Установи зависимости из requirements.txt"
-                ) from exc
-            except Exception as exc:
-                raise RuntimeError("OCR не удалось инициализировать") from exc
-
-    return reader
 
 
 async def run_ocr(path: str) -> list[str]:
 
-    prepared_path = None
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        OCR_WORKER_PATH,
+        path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
 
     try:
-        prepared_path = await asyncio.to_thread(_prepare_ocr_image, path)
-        reader_obj = await get_reader()
-        result = await asyncio.to_thread(_read_ocr_text, reader_obj, prepared_path)
-        return [str(line).strip() for line in result if str(line).strip()]
-    finally:
-        if prepared_path and os.path.exists(prepared_path):
-            try:
-                os.remove(prepared_path)
-            except OSError:
-                logger.warning("Не удалось удалить временный OCR-prep файл: %s", prepared_path)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=OCR_TIMEOUT)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise
 
-
-async def preload_reader():
+    if proc.returncode != 0:
+        error_text = stderr.decode("utf-8", errors="ignore").strip()
+        raise RuntimeError(error_text or f"OCR worker exited with code {proc.returncode}")
 
     try:
-        await get_reader()
-        logger.info("OCR reader preloaded")
-    except Exception as exc:
-        logger.warning("OCR preload failed: %s", exc)
+        payload = json.loads(stdout.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("OCR worker returned invalid response") from exc
+
+    lines = payload.get("lines")
+    if not isinstance(lines, list):
+        raise RuntimeError("OCR worker returned invalid lines")
+
+    return [str(line).strip() for line in lines if str(line).strip()]
 
 
 def extract_tracks(lines):
@@ -247,6 +196,11 @@ class OCRMusic(commands.Cog):
             return
 
         await interaction.response.defer(thinking=True)
+        await send_temporary_followup(
+            interaction,
+            content="🖼️ Распознаю скриншот. Первый запуск после рестарта может занять до 2-3 минут.",
+            delete_after=8,
+        )
 
         path = None
 
@@ -255,10 +209,10 @@ class OCRMusic(commands.Cog):
                 await image.save(tmp.name)
                 path = tmp.name
 
-            text_lines = await asyncio.wait_for(run_ocr(path), timeout=OCR_TIMEOUT)
+            text_lines = await run_ocr(path)
         except asyncio.TimeoutError:
             await interaction.followup.send(
-                "❌ OCR занял слишком много времени. Если бот только что перезапустили, подожди немного и попробуй ещё раз.",
+                "❌ OCR занял слишком много времени",
                 ephemeral=True,
             )
             return
@@ -332,9 +286,4 @@ class OCRMusic(commands.Cog):
 
 
 async def setup(bot):
-    global reader_preload_task
-
     await bot.add_cog(OCRMusic(bot))
-
-    if reader_preload_task is None or reader_preload_task.done():
-        reader_preload_task = asyncio.create_task(preload_reader())

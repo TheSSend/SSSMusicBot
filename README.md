@@ -136,7 +136,7 @@ For youtube-source plugin based playback, use `lavalink.server.sources.youtube: 
 
 ### OCR tuning
 
-`/playimage` uses EasyOCR with a cached reader and background preload so model initialization does not happen on every command call.
+`/playimage` uses EasyOCR in a separate one-shot worker process so heavy OCR initialization does not crash the main bot process.
 
 ## Notes For GitHub
 
