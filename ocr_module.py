@@ -215,6 +215,11 @@ def build_match_text(value: str) -> str:
     return value.strip()
 
 
+def compact_match_text(value: str) -> str:
+
+    return build_match_text(value).replace(" ", "")
+
+
 def similarity_score(left: str, right: str) -> float:
 
     if not left or not right:
@@ -242,12 +247,23 @@ def has_alt_version_marker(value: str) -> bool:
     return any(marker in normalized for marker in markers)
 
 
+def clean_title_extras(value: str) -> str:
+
+    normalized = build_match_text(value)
+    normalized = re.sub(r"\b(remix|hardstyle|sped up|speed up|slowed|reverb|nightcore|mashup|edit|version|cover|live|official audio|official video)\b", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip()
+
+
 def score_track_match(track, title: str, artist: str) -> float:
 
     expected_title = build_match_text(title)
     expected_artist = build_match_text(artist)
     actual_title = build_match_text(getattr(track, "title", "") or "")
     actual_artist = build_match_text(getattr(track, "author", "") or "")
+    compact_expected_title = compact_match_text(title)
+    compact_actual_title = compact_match_text(getattr(track, "title", "") or "")
+    cleaned_actual_title = clean_title_extras(getattr(track, "title", "") or "")
 
     title_score = similarity_score(expected_title, actual_title)
     artist_score = similarity_score(expected_artist, actual_artist)
@@ -263,12 +279,19 @@ def score_track_match(track, title: str, artist: str) -> float:
     artist_bonus = 0.15 if expected_artist and expected_artist in actual_artist else 0.0
     title_bonus = 0.1 if expected_title and expected_title in actual_title else 0.0
     version_penalty = 0.0
+    clean_title_bonus = 0.0
 
     if has_alt_version_marker(getattr(track, "title", "") or "") and not has_alt_version_marker(title):
-        version_penalty += 0.18
+        version_penalty += 0.32
 
     if has_alt_version_marker(getattr(track, "author", "") or "") and not has_alt_version_marker(artist):
-        version_penalty += 0.08
+        version_penalty += 0.12
+
+    if compact_expected_title and compact_expected_title in compact_actual_title:
+        clean_title_bonus += 0.16
+
+    if compact_expected_title and compact_expected_title == compact_match_text(cleaned_actual_title):
+        clean_title_bonus += 0.2
 
     return (
         (title_score * 0.3)
@@ -277,6 +300,7 @@ def score_track_match(track, title: str, artist: str) -> float:
         + (artist_overlap * 0.15)
         + artist_bonus
         + title_bonus
+        + clean_title_bonus
         - version_penalty
     )
 
