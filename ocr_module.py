@@ -12,7 +12,7 @@ from PIL import Image, ImageFilter, ImageOps
 from discord import app_commands
 from discord.ext import commands
 
-from music_core import MusicPlayer, start_track, send_control_message, send_temporary_followup
+from music_core import MusicPlayer, start_track, send_control_message, send_temporary_followup, display_author
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
 OCR_TIMEOUT = 45
@@ -157,7 +157,7 @@ def extract_tracks(lines):
         line = line.strip()
         line = re.sub(r'[|•…"“”]', '', line)
         line = re.sub(r';', '', line)
-        line = re.sub(r'\b(18\+|16\+|13\+|12\+|6\+|0\+)\b', '', line)
+        line = re.sub(r'(^|\s)(18\+|16\+|13\+|12\+|6\+|0\+)(?=\s|$)', ' ', line)
         line = re.sub(r'\s+', ' ', line)
 
         if len(line) < 2:
@@ -187,7 +187,7 @@ def normalize_ocr_text(value: str) -> str:
     value = value.replace("/", " ")
     value = value.replace("\\", " ")
     value = value.replace("Ё", "Е").replace("ё", "е")
-    value = re.sub(r"\b(18\+|16\+|12\+|6\+|0\+)\b", " ", value)
+    value = re.sub(r"(^|\s)(18\+|16\+|13\+|12\+|6\+|0\+)(?=\s|$)", " ", value)
     value = re.sub(r"\s+", " ", value)
     return value.strip()
 
@@ -264,6 +264,7 @@ def score_track_match(track, title: str, artist: str) -> float:
     compact_expected_title = compact_match_text(title)
     compact_actual_title = compact_match_text(getattr(track, "title", "") or "")
     cleaned_actual_title = clean_title_extras(getattr(track, "title", "") or "")
+    cleaned_actual_title_score = similarity_score(expected_title, cleaned_actual_title)
 
     title_score = similarity_score(expected_title, actual_title)
     artist_score = similarity_score(expected_artist, actual_artist)
@@ -282,10 +283,12 @@ def score_track_match(track, title: str, artist: str) -> float:
     clean_title_bonus = 0.0
 
     if has_alt_version_marker(getattr(track, "title", "") or "") and not has_alt_version_marker(title):
-        version_penalty += 0.32
+        version_penalty += 0.45
 
     if has_alt_version_marker(getattr(track, "author", "") or "") and not has_alt_version_marker(artist):
         version_penalty += 0.12
+
+    extra_word_penalty = max(0, len(actual_title.split()) - len(cleaned_actual_title.split())) * 0.05
 
     if compact_expected_title and compact_expected_title in compact_actual_title:
         clean_title_bonus += 0.16
@@ -295,6 +298,7 @@ def score_track_match(track, title: str, artist: str) -> float:
 
     return (
         (title_score * 0.3)
+        + (cleaned_actual_title_score * 0.2)
         + (artist_score * 0.35)
         + (title_overlap * 0.1)
         + (artist_overlap * 0.15)
@@ -302,6 +306,7 @@ def score_track_match(track, title: str, artist: str) -> float:
         + title_bonus
         + clean_title_bonus
         - version_penalty
+        - extra_word_penalty
     )
 
 
@@ -495,7 +500,7 @@ class OCRMusic(commands.Cog):
             else:
                 await player.queue.put_wait(track)
 
-            added.append(f"{artist} – {title}")
+            added.append(f"{display_author(getattr(track, 'author', None))} – {track.title}")
 
         if not added:
             await interaction.followup.send(
