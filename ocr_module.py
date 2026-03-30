@@ -26,16 +26,25 @@ OCR_LINE_Y_THRESHOLD = 10
 OCR_PHRASE_CORRECTIONS = {
     "mrpuctoe": "Игристое",
     "mrpnctoe": "Игристое",
+    "mrpuctoehasman": "Игристое",
     "mproctи": "Прости",
     "mpoctи": "Прости",
+    "pocth": "Прости",
+    "pостн": "Прости",
     "te6eheomeh": "Тебе не до меня",
+    "te6eheaomeha": "Тебе не до меня",
     "corpeimeha": "согрей меня",
+    "corpenmeha": "согрей меня",
     "3bohnkoraa3axoyewbremix": "Звони, когда захочешь Remix",
     "onahawenio6bntusovkasoulfremix": "Ода нашей любви TUSOVKA & SOULF Remix",
+    "oaahaweinio6bntusovkasoulfremix": "Ода нашей любви TUSOVKA & SOULF Remix",
     "mlonbitkahomep5": "Попытка номер 5",
     "mlonbitkanomep5": "Попытка номер 5",
+    "monbithomep5": "Попытка номер 5",
+    "monbithomep5marvinkvartira": "Попытка номер 5",
     "kapaxobmonamvgma": "Джарахов, MONA, MVGMA",
     "aanh": "АДЛИН",
+    "ainh": "АДЛИН",
     "ahtohhe6okrause": "Антон Небо, Krause",
 }
 
@@ -157,7 +166,9 @@ def line_quality_score(value: str) -> int:
 
 def correction_key(value: str) -> str:
 
-    return re.sub(r"[^a-zA-Zа-яА-ЯёЁ0-9]", "", value).lower()
+    normalized = replace_confusable_latin_with_cyrillic(value)
+    normalized = aggressive_ocr_title_guesses(normalized)[0] if aggressive_ocr_title_guesses(normalized) else normalized
+    return re.sub(r"[^a-zA-Zа-яА-ЯёЁ0-9]", "", normalized).lower()
 
 
 def correct_ocr_phrase(value: str) -> str:
