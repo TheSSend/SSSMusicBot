@@ -20,7 +20,7 @@ MAX_OCR_TRACKS = 8
 MAX_SEARCH_CANDIDATES = 6
 OCR_MAX_SIDE = 1600
 OCR_MIN_SCORE = 0.35
-OCR_LINE_Y_THRESHOLD = 22
+OCR_LINE_Y_THRESHOLD = 10
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ def _run_ocr(engine, path: str) -> list[str]:
                 "text": text,
                 "x": min(xs),
                 "y": sum(ys) / len(ys),
+                "h": max(ys) - min(ys),
             }
         )
 
@@ -95,8 +96,13 @@ def _run_ocr(engine, path: str) -> list[str]:
     current_line = [parts[0]]
 
     for part in parts[1:]:
-        previous_y = current_line[-1]["y"]
-        if abs(part["y"] - previous_y) <= OCR_LINE_Y_THRESHOLD:
+        previous = current_line[-1]
+        dynamic_threshold = max(
+            OCR_LINE_Y_THRESHOLD,
+            min(previous["h"], part["h"]) * 0.4,
+        )
+
+        if abs(part["y"] - previous["y"]) <= dynamic_threshold:
             current_line.append(part)
             continue
 
@@ -150,6 +156,7 @@ def extract_tracks(lines):
         line = line.strip()
         line = re.sub(r'[|•…"“”]', '', line)
         line = re.sub(r';', '', line)
+        line = re.sub(r'\b(18\+|16\+|13\+|12\+|6\+|0\+)\b', '', line)
         line = re.sub(r'\s+', ' ', line)
 
         if len(line) < 2:
