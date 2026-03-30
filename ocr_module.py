@@ -21,23 +21,27 @@ reader_lock = asyncio.Lock()
 
 # ================= SAFE EASY OCR =================
 
+
+def _build_reader():
+
+    import easyocr
+
+    return easyocr.Reader(['ru', 'en'], gpu=False, verbose=False)
+
 async def get_reader():
     global reader
 
     async with reader_lock:
         if reader is None:
             try:
-                import easyocr
+                loop = asyncio.get_running_loop()
+                reader = await loop.run_in_executor(None, _build_reader)
             except ModuleNotFoundError as exc:
                 raise RuntimeError(
                     "Модуль easyocr не установлен. Установи зависимости из requirements.txt"
                 ) from exc
-
-            loop = asyncio.get_running_loop()
-            reader = await loop.run_in_executor(
-                None,
-                lambda: easyocr.Reader(['ru', 'en'], gpu=False, verbose=False)
-            )
+            except Exception as exc:
+                raise RuntimeError("OCR не удалось инициализировать") from exc
 
     return reader
 
