@@ -15,45 +15,96 @@ from discord.ext import commands
 from music_core import MusicPlayer, start_track, send_control_message, send_temporary_followup
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
-OCR_TIMEOUT = 45
+OCR_START_TIMEOUT = 180
+OCR_REQUEST_TIMEOUT = 60
 SEARCH_TIMEOUT = 12
 MAX_OCR_TRACKS = 8
 OCR_WORKER_PATH = os.path.join(os.path.dirname(__file__), "ocr_worker.py")
 
 logger = logging.getLogger(__name__)
 
+_ocr_proc: asyncio.subprocess.Process | None = None
+_ocr_lock = asyncio.Lock()
+
+
+async def ensure_ocr_worker() -> asyncio.subprocess.Process:
+
+    global _ocr_proc
+
+    async with _ocr_lock:
+        if _ocr_proc is not None and _ocr_proc.returncode is None:
+            return _ocr_proc
+
+        _ocr_proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            OCR_WORKER_PATH,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        assert _ocr_proc.stdout is not None
+        ready_line = await asyncio.wait_for(_ocr_proc.stdout.readline(), timeout=OCR_START_TIMEOUT)
+        if not ready_line:
+            stderr_text = ""
+            if _ocr_proc.stderr is not None:
+                stderr_text = (await _ocr_proc.stderr.read()).decode("utf-8", errors="ignore").strip()
+            raise RuntimeError(stderr_text or "OCR worker failed to start")
+
+        payload = json.loads(ready_line.decode("utf-8"))
+        if not payload.get("ready"):
+            raise RuntimeError(payload.get("error") or "OCR worker is not ready")
+
+        logger.info("OCR worker is ready")
+        return _ocr_proc
+
 
 async def run_ocr(path: str) -> list[str]:
 
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        OCR_WORKER_PATH,
-        path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    proc = await ensure_ocr_worker()
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+
+    request = json.dumps({"path": path}, ensure_ascii=False) + "\n"
+
+    async with _ocr_lock:
+        if proc.returncode is not None:
+            raise RuntimeError("OCR worker is not running")
+
+        proc.stdin.write(request.encode("utf-8"))
+        await proc.stdin.drain()
+
+        try:
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=OCR_REQUEST_TIMEOUT)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            raise
+
+    if not line:
+        raise RuntimeError("OCR worker returned empty response")
 
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=OCR_TIMEOUT)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        raise
-
-    if proc.returncode != 0:
-        error_text = stderr.decode("utf-8", errors="ignore").strip()
-        raise RuntimeError(error_text or f"OCR worker exited with code {proc.returncode}")
-
-    try:
-        payload = json.loads(stdout.decode("utf-8"))
+        payload = json.loads(line.decode("utf-8"))
     except json.JSONDecodeError as exc:
         raise RuntimeError("OCR worker returned invalid response") from exc
+
+    if not payload.get("ok"):
+        raise RuntimeError(payload.get("error") or "OCR worker failed")
 
     lines = payload.get("lines")
     if not isinstance(lines, list):
         raise RuntimeError("OCR worker returned invalid lines")
 
     return [str(line).strip() for line in lines if str(line).strip()]
+
+
+async def preload_ocr_worker():
+
+    try:
+        await ensure_ocr_worker()
+    except Exception as exc:
+        logger.warning("OCR worker preload failed: %s", exc)
 
 
 def extract_tracks(lines):
@@ -218,3 +269,4 @@ class OCRMusic(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(OCRMusic(bot))
+    asyncio.create_task(preload_ocr_worker())

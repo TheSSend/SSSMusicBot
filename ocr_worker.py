@@ -22,45 +22,58 @@ def prepare_image(source_path: str) -> str:
             return tmp.name
 
 
+def respond(payload: dict):
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
 def main() -> int:
-
-    if len(sys.argv) != 2:
-        sys.stderr.write("usage: ocr_worker.py <image-path>\n")
-        return 2
-
-    source_path = sys.argv[1]
-    prepared_path = None
 
     try:
         import easyocr
 
-        prepared_path = prepare_image(source_path)
         reader = easyocr.Reader(["ru", "en"], gpu=False, verbose=False)
-        lines = reader.readtext(
-            prepared_path,
-            detail=0,
-            paragraph=False,
-            decoder="greedy",
-            beamWidth=1,
-            batch_size=1,
-            workers=0,
-            canvas_size=OCR_MAX_SIDE,
-            mag_ratio=1.0,
-            text_threshold=0.7,
-            low_text=0.4,
-            link_threshold=0.4,
-        )
-        sys.stdout.write(json.dumps({"lines": lines}, ensure_ascii=False))
-        return 0
+        respond({"ready": True})
     except Exception as exc:
-        sys.stderr.write(str(exc))
+        respond({"ready": False, "error": str(exc)})
         return 1
-    finally:
-        if prepared_path and os.path.exists(prepared_path):
-            try:
-                os.remove(prepared_path)
-            except OSError:
-                pass
+
+    for raw_line in sys.stdin:
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+
+        prepared_path = None
+
+        try:
+            payload = json.loads(raw_line)
+            source_path = payload["path"]
+            prepared_path = prepare_image(source_path)
+            lines = reader.readtext(
+                prepared_path,
+                detail=0,
+                paragraph=False,
+                decoder="greedy",
+                beamWidth=1,
+                batch_size=1,
+                workers=0,
+                canvas_size=OCR_MAX_SIDE,
+                mag_ratio=1.0,
+                text_threshold=0.7,
+                low_text=0.4,
+                link_threshold=0.4,
+            )
+            respond({"ok": True, "lines": lines})
+        except Exception as exc:
+            respond({"ok": False, "error": str(exc)})
+        finally:
+            if prepared_path and os.path.exists(prepared_path):
+                try:
+                    os.remove(prepared_path)
+                except OSError:
+                    pass
+
+    return 0
 
 
 if __name__ == "__main__":
