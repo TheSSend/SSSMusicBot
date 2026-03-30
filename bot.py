@@ -142,22 +142,6 @@ def cancel_idle_disconnect(player_or_guild_id):
         task.cancel()
 
 
-async def cleanup_control_message(player: MusicPlayer):
-
-    control_message = getattr(player, "control_message", None)
-    if control_message is None:
-        return
-
-    try:
-        await control_message.delete()
-    except discord.NotFound:
-        pass
-    except Exception:
-        logger.exception("Failed to delete control message for guild=%s", getattr(player.guild, "id", None))
-    finally:
-        player.control_message = None
-
-
 def schedule_idle_disconnect(player: MusicPlayer, delay: int = 10):
 
     guild_id = getattr(player.guild, "id", None)
@@ -169,11 +153,17 @@ def schedule_idle_disconnect(player: MusicPlayer, delay: int = 10):
     async def _runner():
         try:
             await asyncio.sleep(delay)
-            voice_client = getattr(player.guild, "voice_client", None)
-            if voice_client is player and player.queue.is_empty and not player.playing and not player.paused:
+            if player.is_connected() and player.queue.is_empty and not player.playing:
                 try:
-                    await cleanup_control_message(player)
+                    control_message = getattr(player, "control_message", None)
                     await player.disconnect(force=True)
+                    if control_message is not None:
+                        try:
+                            await control_message.delete()
+                        except Exception:
+                            logger.exception("Failed to delete control message for guild=%s", guild_id)
+                        finally:
+                            player.control_message = None
                 except Exception:
                     logger.exception("Failed to disconnect idle player for guild=%s", guild_id)
         except asyncio.CancelledError:
@@ -326,11 +316,6 @@ async def on_track_end(payload: wavelink.TrackEndEventPayload):
 
 @bot.listen("on_wavelink_player_destroy")
 async def on_player_destroy(payload):
-
-    player = getattr(payload, "player", None)
-    if player:
-        cancel_idle_disconnect(player)
-        await cleanup_control_message(player)
 
     await update_presence(None)
 
