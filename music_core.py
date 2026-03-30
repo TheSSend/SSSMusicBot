@@ -329,7 +329,6 @@ async def send_temporary_followup(
         embed=embed,
         view=view,
         wait=True,
-        delete_after=delete_after,
     )
 
     async def _delete_later():
