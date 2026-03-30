@@ -6,12 +6,15 @@ import tempfile
 import os
 import logging
 
+from PIL import Image, ImageOps, ImageFilter
+
 from discord import app_commands
 from discord.ext import commands
 
 from music_core import MusicPlayer, start_track, send_control_message, send_temporary_followup
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
+OCR_MAX_SIDE = 1600
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,37 @@ def _build_reader():
     import easyocr
 
     return easyocr.Reader(['ru', 'en'], gpu=False, verbose=False)
+
+
+def _prepare_ocr_image(source_path: str) -> str:
+
+    with Image.open(source_path) as image:
+        prepared = image.convert("RGB")
+        prepared.thumbnail((OCR_MAX_SIDE, OCR_MAX_SIDE), Image.Resampling.LANCZOS)
+        prepared = ImageOps.autocontrast(prepared)
+        prepared = prepared.filter(ImageFilter.SHARPEN)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            prepared.save(tmp.name, format="PNG", optimize=True)
+            return tmp.name
+
+
+def _read_ocr_text(reader_obj, path: str):
+
+    return reader_obj.readtext(
+        path,
+        detail=0,
+        paragraph=False,
+        decoder="greedy",
+        beamWidth=1,
+        batch_size=1,
+        workers=0,
+        canvas_size=OCR_MAX_SIDE,
+        mag_ratio=1.0,
+        text_threshold=0.7,
+        low_text=0.4,
+        link_threshold=0.4,
+    )
 
 async def get_reader():
     global reader
@@ -50,12 +84,34 @@ async def run_ocr(path):
     loop = asyncio.get_running_loop()
     r = await get_reader()
 
-    result = await loop.run_in_executor(
-        None,
-        lambda: r.readtext(path, detail=0)
-    )
+    prepared_path = None
+
+    try:
+        prepared_path = await loop.run_in_executor(None, _prepare_ocr_image, path)
+
+        result = await loop.run_in_executor(
+            None,
+            _read_ocr_text,
+            r,
+            prepared_path,
+        )
+    finally:
+        if prepared_path and os.path.exists(prepared_path):
+            try:
+                os.remove(prepared_path)
+            except OSError:
+                logger.warning("Не удалось удалить временный OCR-prep файл: %s", prepared_path)
 
     return result
+
+
+async def preload_ocr():
+
+    try:
+        await get_reader()
+        logger.info("OCR reader preloaded")
+    except Exception as exc:
+        logger.warning("OCR preload failed: %s", exc)
 
 
 # ================= TRACK PARSER =================
@@ -216,3 +272,4 @@ class OCRMusic(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(OCRMusic(bot))
+    asyncio.create_task(preload_ocr())
