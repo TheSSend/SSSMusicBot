@@ -358,6 +358,8 @@ async def send_temporary_followup(
                 await message.delete()
         except asyncio.CancelledError:
             return
+        except discord.NotFound:
+            return
         except Exception:
             logger.exception("Failed to delete temporary followup message")
 

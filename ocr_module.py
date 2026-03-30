@@ -23,6 +23,22 @@ OCR_MAX_SIDE = 1600
 OCR_MIN_SCORE = 0.35
 OCR_LINE_Y_THRESHOLD = 10
 
+OCR_PHRASE_CORRECTIONS = {
+    "mrpuctoe": "Игристое",
+    "mrpnctoe": "Игристое",
+    "mproctи": "Прости",
+    "mpoctи": "Прости",
+    "te6eheomeh": "Тебе не до меня",
+    "corpeimeha": "согрей меня",
+    "3bohnkoraa3axoyewbremix": "Звони, когда захочешь Remix",
+    "onahawenio6bntusovkasoulfremix": "Ода нашей любви TUSOVKA & SOULF Remix",
+    "mlonbitkahomep5": "Попытка номер 5",
+    "mlonbitkanomep5": "Попытка номер 5",
+    "kapaxobmonamvgma": "Джарахов, MONA, MVGMA",
+    "aanh": "АДЛИН",
+    "ahtohhe6okrause": "Антон Небо, Krause",
+}
+
 logger = logging.getLogger(__name__)
 
 ocr_engine = None
@@ -139,6 +155,17 @@ def line_quality_score(value: str) -> int:
     return (cyr * 3) + lat + digits - spaces
 
 
+def correction_key(value: str) -> str:
+
+    return re.sub(r"[^a-zA-Zа-яА-ЯёЁ0-9]", "", value).lower()
+
+
+def correct_ocr_phrase(value: str) -> str:
+
+    corrected = OCR_PHRASE_CORRECTIONS.get(correction_key(value))
+    return corrected or value
+
+
 def merge_ocr_lines(primary: list[str], secondary: list[str]) -> list[str]:
 
     if not secondary:
@@ -208,6 +235,7 @@ def extract_tracks(lines):
     cleaned = []
 
     for line in lines:
+        line = correct_ocr_phrase(line)
         line = line.strip()
         line = re.sub(r'[|•…"“”]', '', line)
         line = re.sub(r';', '', line)
