@@ -223,6 +223,25 @@ def similarity_score(left: str, right: str) -> float:
     return difflib.SequenceMatcher(None, left, right).ratio()
 
 
+def has_alt_version_marker(value: str) -> bool:
+
+    normalized = build_match_text(value)
+    markers = (
+        "remix",
+        "sped up",
+        "speed up",
+        "slowed",
+        "reverb",
+        "nightcore",
+        "mashup",
+        "edit",
+        "version",
+        "cover",
+        "live",
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def score_track_match(track, title: str, artist: str) -> float:
 
     expected_title = build_match_text(title)
@@ -243,6 +262,13 @@ def score_track_match(track, title: str, artist: str) -> float:
 
     artist_bonus = 0.15 if expected_artist and expected_artist in actual_artist else 0.0
     title_bonus = 0.1 if expected_title and expected_title in actual_title else 0.0
+    version_penalty = 0.0
+
+    if has_alt_version_marker(getattr(track, "title", "") or "") and not has_alt_version_marker(title):
+        version_penalty += 0.18
+
+    if has_alt_version_marker(getattr(track, "author", "") or "") and not has_alt_version_marker(artist):
+        version_penalty += 0.08
 
     return (
         (title_score * 0.3)
@@ -251,6 +277,7 @@ def score_track_match(track, title: str, artist: str) -> float:
         + (artist_overlap * 0.15)
         + artist_bonus
         + title_bonus
+        - version_penalty
     )
 
 
