@@ -18,6 +18,7 @@ OCR_TIMEOUT = 90
 SEARCH_TIMEOUT = 12
 MAX_OCR_TRACKS = 8
 OCR_MAX_SIDE = 1600
+MAX_SEARCH_CANDIDATES = 6
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,82 @@ def extract_tracks(lines):
     return tracks[:MAX_OCR_TRACKS]
 
 
+def normalize_ocr_text(value: str) -> str:
+
+    value = value.replace("_", " ")
+    value = value.replace(",", " ")
+    value = value.replace("/", " ")
+    value = value.replace("\\", " ")
+    value = value.replace("Ё", "Е").replace("ё", "е")
+    value = re.sub(r"\b(18\+|16\+|12\+|6\+|0\+)\b", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
+
+
+def build_ocr_search_queries(artist: str, title: str) -> list[str]:
+
+    raw_title = title.strip()
+    raw_artist = artist.strip()
+    title_clean = normalize_ocr_text(raw_title)
+    artist_clean = normalize_ocr_text(raw_artist)
+
+    variants = [
+        f"{raw_artist} {raw_title}",
+        f"{raw_title} {raw_artist}",
+        raw_title,
+        f"{artist_clean} {title_clean}",
+        f"{title_clean} {artist_clean}",
+        title_clean,
+    ]
+
+    queries = []
+    seen = set()
+
+    for variant in variants:
+        normalized = re.sub(r"\s+", " ", variant).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        queries.append(normalized)
+
+    return queries[:MAX_SEARCH_CANDIDATES]
+
+
+async def search_ocr_track(artist: str, title: str):
+
+    node = wavelink.Pool.get_node()
+
+    for query in build_ocr_search_queries(artist, title):
+        candidate = f"ytsearch:{query}"
+        logger.info("OCR searching Lavalink with %s", candidate)
+
+        try:
+            results = await asyncio.wait_for(
+                wavelink.Pool.fetch_tracks(candidate, node=node),
+                timeout=SEARCH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("OCR search timed out for query=%s", candidate)
+            continue
+        except wavelink.LavalinkException:
+            logger.exception("OCR search failed for query=%s", candidate)
+            continue
+        except Exception:
+            logger.exception("Unexpected OCR search failure for query=%s", candidate)
+            continue
+
+        if results:
+            logger.info(
+                "OCR search matched query=%s type=%s len=%s",
+                candidate,
+                type(results).__name__,
+                len(results) if hasattr(results, "__len__") else "?",
+            )
+            return results[0]
+
+    return None
+
+
 class OCRMusic(commands.Cog):
 
     def __init__(self, bot):
@@ -221,21 +298,11 @@ class OCRMusic(commands.Cog):
         added = []
 
         for artist, title in tracks:
-            query = f"{artist} {title}"
+            track = await search_ocr_track(artist, title)
 
-            try:
-                results = await asyncio.wait_for(wavelink.Playable.search(query), timeout=SEARCH_TIMEOUT)
-            except asyncio.TimeoutError:
-                logger.warning("OCR search timed out for query=%s", query)
-                continue
-            except Exception:
-                logger.exception("OCR search failed for query=%s", query)
+            if not track:
                 continue
 
-            if not results:
-                continue
-
-            track = results[0]
             track.requester = interaction.user
 
             if not player.playing and not player.paused:
