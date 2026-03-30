@@ -259,19 +259,44 @@ def replace_confusable_latin_with_cyrillic(value: str) -> str:
     return value.translate(translation)
 
 
-def aggressive_ocr_title_guess(value: str) -> str:
+def aggressive_ocr_title_guesses(value: str) -> list[str]:
 
-    translation = str.maketrans({
-        "M": "И", "m": "и",
-        "r": "г", "R": "Я",
-        "u": "и", "U": "И",
-        "T": "т", "t": "т",
-        "A": "Д", "a": "а",
-        "K": "К", "k": "к",
-        "H": "Н", "h": "н",
-        "N": "П", "n": "п",
-    })
-    return replace_confusable_latin_with_cyrillic(value).translate(translation)
+    base = replace_confusable_latin_with_cyrillic(value)
+    tables = [
+        str.maketrans({
+            "M": "И", "m": "и",
+            "r": "г", "R": "Г",
+            "p": "р", "P": "Р",
+            "n": "и", "N": "И",
+            "c": "с", "C": "С",
+            "T": "т", "t": "т",
+            "A": "д", "a": "а",
+            "K": "к", "k": "к",
+            "H": "н", "h": "н",
+            "O": "о", "o": "о",
+            "E": "е", "e": "е",
+        }),
+        str.maketrans({
+            "M": "м", "m": "м",
+            "A": "д", "a": "а",
+            "K": "к", "k": "к",
+            "H": "н", "h": "н",
+            "p": "р", "P": "Р",
+            "n": "п", "N": "П",
+            "c": "с", "C": "С",
+            "T": "т", "t": "т",
+            "O": "о", "o": "о",
+            "E": "е", "e": "е",
+        }),
+    ]
+
+    variants = []
+    for table in tables:
+        candidate = base.translate(table)
+        if candidate not in variants:
+            variants.append(candidate)
+
+    return variants
 
 
 def build_match_text(value: str) -> str:
@@ -287,11 +312,14 @@ def build_match_text(value: str) -> str:
 def build_title_candidates(value: str) -> list[str]:
 
     candidates = []
-    for candidate in (
+    raw_candidates = [
         build_match_text(value),
         build_match_text(replace_confusable_latin_with_cyrillic(value)),
-        build_match_text(aggressive_ocr_title_guess(value)),
-    ):
+    ]
+
+    raw_candidates.extend(build_match_text(candidate) for candidate in aggressive_ocr_title_guesses(value))
+
+    for candidate in raw_candidates:
         if candidate and candidate not in candidates:
             candidates.append(candidate)
 
@@ -402,18 +430,16 @@ def build_ocr_search_queries(title: str, artist: str) -> list[str]:
     title_clean = normalize_ocr_text(raw_title)
     artist_clean = normalize_ocr_text(raw_artist)
     title_cyr = replace_confusable_latin_with_cyrillic(title_clean)
-    title_guess = aggressive_ocr_title_guess(title_clean)
+    title_guesses = aggressive_ocr_title_guesses(title_clean)
     artist_cyr = replace_confusable_latin_with_cyrillic(artist_clean)
 
     variants = [
         f"{title_clean} {artist_clean}",
         title_clean,
-        title_guess,
         artist_clean,
         f"{artist_clean} {title_clean}",
         f"{title_cyr} {artist_cyr}",
         title_cyr,
-        title_guess + (f" {artist_cyr}" if artist_cyr else ""),
         artist_cyr,
         f"{artist_cyr} {title_cyr}",
         f"{raw_title} {raw_artist}",
@@ -421,6 +447,11 @@ def build_ocr_search_queries(title: str, artist: str) -> list[str]:
         raw_artist,
         f"{raw_artist} {raw_title}",
     ]
+
+    for title_guess in title_guesses:
+        variants.append(title_guess)
+        if artist_cyr:
+            variants.append(f"{title_guess} {artist_cyr}")
 
     queries = []
     seen = set()
