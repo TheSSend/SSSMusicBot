@@ -174,7 +174,7 @@ def extract_tracks(lines):
     for i in range(0, len(cleaned) - 1, 2):
         title = cleaned[i]
         artist = cleaned[i + 1]
-        tracks.append((artist.strip(), title.strip()))
+        tracks.append((title.strip(), artist.strip()))
 
     return tracks[:MAX_OCR_TRACKS]
 
@@ -191,20 +191,38 @@ def normalize_ocr_text(value: str) -> str:
     return value.strip()
 
 
-def build_ocr_search_queries(artist: str, title: str) -> list[str]:
+def replace_confusable_latin_with_cyrillic(value: str) -> str:
+
+    translation = str.maketrans({
+        "A": "А", "a": "а",
+        "B": "В", "E": "Е", "e": "е",
+        "H": "Н", "K": "К", "M": "М",
+        "O": "О", "o": "о", "P": "Р",
+        "C": "С", "c": "с", "T": "Т",
+        "X": "Х", "x": "х", "Y": "У", "y": "у",
+    })
+    return value.translate(translation)
+
+
+def build_ocr_search_queries(title: str, artist: str) -> list[str]:
 
     raw_title = title.strip()
     raw_artist = artist.strip()
     title_clean = normalize_ocr_text(raw_title)
     artist_clean = normalize_ocr_text(raw_artist)
+    title_cyr = replace_confusable_latin_with_cyrillic(title_clean)
+    artist_cyr = replace_confusable_latin_with_cyrillic(artist_clean)
 
     variants = [
-        f"{raw_artist} {raw_title}",
-        f"{raw_title} {raw_artist}",
-        raw_title,
-        f"{artist_clean} {title_clean}",
         f"{title_clean} {artist_clean}",
         title_clean,
+        f"{artist_clean} {title_clean}",
+        f"{title_cyr} {artist_cyr}",
+        title_cyr,
+        f"{artist_cyr} {title_cyr}",
+        f"{raw_title} {raw_artist}",
+        raw_title,
+        f"{raw_artist} {raw_title}",
     ]
 
     queries = []
@@ -220,11 +238,11 @@ def build_ocr_search_queries(artist: str, title: str) -> list[str]:
     return queries[:MAX_SEARCH_CANDIDATES]
 
 
-async def search_ocr_track(artist: str, title: str):
+async def search_ocr_track(title: str, artist: str):
 
     node = wavelink.Pool.get_node()
 
-    for query in build_ocr_search_queries(artist, title):
+    for query in build_ocr_search_queries(title, artist):
         candidate = f"ytsearch:{query}"
         logger.info("OCR searching Lavalink with %s", candidate)
 
@@ -338,8 +356,8 @@ class OCRMusic(commands.Cog):
 
         added = []
 
-        for artist, title in tracks:
-            track = await search_ocr_track(artist, title)
+        for title, artist in tracks:
+            track = await search_ocr_track(title, artist)
 
             if not track:
                 continue
