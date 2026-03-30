@@ -153,17 +153,21 @@ def schedule_idle_disconnect(player: MusicPlayer, delay: int = 10):
     async def _runner():
         try:
             await asyncio.sleep(delay)
-            if player.is_connected() and player.queue.is_empty and not player.playing:
+            voice_client = getattr(player.guild, "voice_client", None)
+            if voice_client is player and player.queue.is_empty and not player.playing and not player.paused:
                 try:
                     control_message = getattr(player, "control_message", None)
-                    await player.disconnect(force=True)
                     if control_message is not None:
                         try:
                             await control_message.delete()
+                        except discord.NotFound:
+                            pass
                         except Exception:
                             logger.exception("Failed to delete control message for guild=%s", guild_id)
                         finally:
                             player.control_message = None
+
+                    await player.disconnect(force=True)
                 except Exception:
                     logger.exception("Failed to disconnect idle player for guild=%s", guild_id)
         except asyncio.CancelledError:
