@@ -19,6 +19,8 @@ SEARCH_TIMEOUT = 12
 MAX_OCR_TRACKS = 8
 MAX_SEARCH_CANDIDATES = 6
 OCR_MAX_SIDE = 1600
+OCR_MIN_SCORE = 0.35
+OCR_LINE_Y_THRESHOLD = 22
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +54,57 @@ def _run_ocr(engine, path: str) -> list[str]:
     if not result:
         return []
 
-    lines = []
+    parts = []
     for item in result:
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
             continue
 
+        box = item[0]
         text = str(item[1]).strip()
-        if text:
-            lines.append(text)
+        try:
+            score = float(item[2])
+        except (TypeError, ValueError):
+            score = 1.0
+
+        if not text or score < OCR_MIN_SCORE:
+            continue
+
+        if not isinstance(box, (list, tuple)) or not box:
+            continue
+
+        points = [point for point in box if isinstance(point, (list, tuple)) and len(point) >= 2]
+        if not points:
+            continue
+
+        xs = [float(point[0]) for point in points]
+        ys = [float(point[1]) for point in points]
+        parts.append(
+            {
+                "text": text,
+                "x": min(xs),
+                "y": sum(ys) / len(ys),
+            }
+        )
+
+    parts.sort(key=lambda part: (part["y"], part["x"]))
+
+    if not parts:
+        return []
+
+    lines = []
+    current_line = [parts[0]]
+
+    for part in parts[1:]:
+        previous_y = current_line[-1]["y"]
+        if abs(part["y"] - previous_y) <= OCR_LINE_Y_THRESHOLD:
+            current_line.append(part)
+            continue
+
+        lines.append(" ".join(segment["text"] for segment in sorted(current_line, key=lambda item: item["x"])).strip())
+        current_line = [part]
+
+    if current_line:
+        lines.append(" ".join(segment["text"] for segment in sorted(current_line, key=lambda item: item["x"])).strip())
 
     return lines
 
