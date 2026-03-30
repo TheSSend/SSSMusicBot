@@ -1,126 +1,126 @@
 import asyncio
-import json
 import logging
 import os
 import re
-import sys
 import tempfile
 
 import discord
 import wavelink
 
+from PIL import Image, ImageFilter, ImageOps
 from discord import app_commands
 from discord.ext import commands
 
 from music_core import MusicPlayer, start_track, send_control_message, send_temporary_followup
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
-OCR_START_TIMEOUT = 180
-OCR_REQUEST_TIMEOUT = 60
+OCR_TIMEOUT = 90
 SEARCH_TIMEOUT = 12
 MAX_OCR_TRACKS = 8
-OCR_WORKER_PATH = os.path.join(os.path.dirname(__file__), "ocr_worker.py")
+OCR_MAX_SIDE = 1600
 
 logger = logging.getLogger(__name__)
 
-_ocr_proc: asyncio.subprocess.Process | None = None
-_ocr_lock = asyncio.Lock()
+reader = None
+reader_lock = asyncio.Lock()
+reader_preload_task: asyncio.Task | None = None
 
 
-async def ensure_ocr_worker() -> asyncio.subprocess.Process:
+def _build_reader():
 
-    global _ocr_proc
+    import easyocr
 
-    async with _ocr_lock:
-        if _ocr_proc is not None and _ocr_proc.returncode is None:
-            return _ocr_proc
+    return easyocr.Reader(["ru", "en"], gpu=False, verbose=False)
 
-        _ocr_proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            OCR_WORKER_PATH,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
 
-        assert _ocr_proc.stdout is not None
-        ready_line = await asyncio.wait_for(_ocr_proc.stdout.readline(), timeout=OCR_START_TIMEOUT)
-        if not ready_line:
-            stderr_text = ""
-            if _ocr_proc.stderr is not None:
-                stderr_text = (await _ocr_proc.stderr.read()).decode("utf-8", errors="ignore").strip()
-            raise RuntimeError(stderr_text or "OCR worker failed to start")
+def _prepare_ocr_image(source_path: str) -> str:
 
-        payload = json.loads(ready_line.decode("utf-8"))
-        if not payload.get("ready"):
-            raise RuntimeError(payload.get("error") or "OCR worker is not ready")
+    with Image.open(source_path) as image:
+        prepared = image.convert("RGB")
+        prepared.thumbnail((OCR_MAX_SIDE, OCR_MAX_SIDE), Image.Resampling.LANCZOS)
+        prepared = ImageOps.autocontrast(prepared)
+        prepared = prepared.filter(ImageFilter.SHARPEN)
 
-        logger.info("OCR worker is ready")
-        return _ocr_proc
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            prepared.save(tmp.name, format="PNG", optimize=True)
+            return tmp.name
+
+
+def _read_ocr_text(reader_obj, path: str):
+
+    return reader_obj.readtext(
+        path,
+        detail=0,
+        paragraph=False,
+        decoder="greedy",
+        beamWidth=1,
+        batch_size=1,
+        workers=0,
+        canvas_size=OCR_MAX_SIDE,
+        mag_ratio=1.0,
+        text_threshold=0.7,
+        low_text=0.4,
+        link_threshold=0.4,
+    )
+
+
+async def get_reader():
+    global reader
+
+    async with reader_lock:
+        if reader is None:
+            try:
+                reader = await asyncio.to_thread(_build_reader)
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "Модуль easyocr не установлен. Установи зависимости из requirements.txt"
+                ) from exc
+            except Exception as exc:
+                raise RuntimeError("OCR не удалось инициализировать") from exc
+
+    return reader
 
 
 async def run_ocr(path: str) -> list[str]:
 
-    proc = await ensure_ocr_worker()
-    assert proc.stdin is not None
-    assert proc.stdout is not None
-
-    request = json.dumps({"path": path}, ensure_ascii=False) + "\n"
-
-    async with _ocr_lock:
-        if proc.returncode is not None:
-            raise RuntimeError("OCR worker is not running")
-
-        proc.stdin.write(request.encode("utf-8"))
-        await proc.stdin.drain()
-
-        try:
-            line = await asyncio.wait_for(proc.stdout.readline(), timeout=OCR_REQUEST_TIMEOUT)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            raise
-
-    if not line:
-        raise RuntimeError("OCR worker returned empty response")
+    prepared_path = None
 
     try:
-        payload = json.loads(line.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("OCR worker returned invalid response") from exc
-
-    if not payload.get("ok"):
-        raise RuntimeError(payload.get("error") or "OCR worker failed")
-
-    lines = payload.get("lines")
-    if not isinstance(lines, list):
-        raise RuntimeError("OCR worker returned invalid lines")
-
-    return [str(line).strip() for line in lines if str(line).strip()]
+        prepared_path = await asyncio.to_thread(_prepare_ocr_image, path)
+        reader_obj = await get_reader()
+        result = await asyncio.to_thread(_read_ocr_text, reader_obj, prepared_path)
+        return [str(line).strip() for line in result if str(line).strip()]
+    finally:
+        if prepared_path and os.path.exists(prepared_path):
+            try:
+                os.remove(prepared_path)
+            except OSError:
+                logger.warning("Не удалось удалить временный OCR-prep файл: %s", prepared_path)
 
 
-async def preload_ocr_worker():
+async def preload_reader():
 
     try:
-        await ensure_ocr_worker()
+        await get_reader()
+        logger.info("OCR reader preloaded")
     except Exception as exc:
-        logger.warning("OCR worker preload failed: %s", exc)
+        logger.warning("OCR preload failed: %s", exc)
 
 
 def extract_tracks(lines):
 
     cleaned = []
 
-    for l in lines:
-        l = l.strip()
-        l = re.sub(r'[|•…"“”]', '', l)
-        l = re.sub(r';', '', l)
-        l = re.sub(r'\s+', ' ', l)
+    for line in lines:
+        line = line.strip()
+        line = re.sub(r'[|•…"“”]', '', line)
+        line = re.sub(r';', '', line)
+        line = re.sub(r'\s+', ' ', line)
 
-        if len(l) < 2:
+        if len(line) < 2:
             continue
 
-        cleaned.append(l)
+        cleaned.append(line)
 
     logger.info("========== OCR ==========")
     for line in cleaned:
@@ -151,21 +151,21 @@ class OCRMusic(commands.Cog):
         if not interaction.user.voice:
             await interaction.response.send_message(
                 "❌ Ты не в голосовом канале",
-                ephemeral=True
+                ephemeral=True,
             )
             return
 
         if not image.content_type or not image.content_type.startswith("image"):
             await interaction.response.send_message(
                 "❌ Нужен файл изображения",
-                ephemeral=True
+                ephemeral=True,
             )
             return
 
         if image.size > MAX_FILE_SIZE:
             await interaction.response.send_message(
                 "❌ Файл слишком большой (макс 10MB)",
-                ephemeral=True
+                ephemeral=True,
             )
             return
 
@@ -178,35 +178,32 @@ class OCRMusic(commands.Cog):
                 await image.save(tmp.name)
                 path = tmp.name
 
-            text_lines = await run_ocr(path)
-
+            text_lines = await asyncio.wait_for(run_ocr(path), timeout=OCR_TIMEOUT)
         except asyncio.TimeoutError:
             await interaction.followup.send(
-                "❌ OCR занял слишком много времени",
-                ephemeral=True
+                "❌ OCR занял слишком много времени. Если бот только что перезапустили, подожди немного и попробуй ещё раз.",
+                ephemeral=True,
             )
             return
-
-        except Exception as e:
+        except Exception as exc:
             await interaction.followup.send(
-                f"❌ Ошибка OCR: {e}",
-                ephemeral=True
+                f"❌ Ошибка OCR: {exc}",
+                ephemeral=True,
             )
             return
-
         finally:
             if path and os.path.exists(path):
                 try:
                     os.remove(path)
-                except OSError as e:
-                    logger.warning("Не удалось удалить временный OCR файл: %s", e)
+                except OSError as exc:
+                    logger.warning("Не удалось удалить временный OCR файл: %s", exc)
 
         tracks = extract_tracks(text_lines)
 
         if not tracks:
             await interaction.followup.send(
                 "❌ Треки не распознаны",
-                ephemeral=True
+                ephemeral=True,
             )
             return
 
@@ -254,19 +251,23 @@ class OCRMusic(commands.Cog):
         if not added:
             await interaction.followup.send(
                 "❌ Ничего не найдено в поиске",
-                ephemeral=True
+                ephemeral=True,
             )
             return
 
         embed = discord.Embed(
             title="🎵 Добавлено в очередь",
-            description="\n".join(f"{i+1}. {t}" for i, t in enumerate(added)),
-            color=0xf1c40f,
+            description="\n".join(f"{i+1}. {track}" for i, track in enumerate(added)),
+            color=0xF1C40F,
         )
 
         await send_temporary_followup(interaction, embed=embed, delete_after=5)
 
 
 async def setup(bot):
+    global reader_preload_task
+
     await bot.add_cog(OCRMusic(bot))
-    asyncio.create_task(preload_ocr_worker())
+
+    if reader_preload_task is None or reader_preload_task.done():
+        reader_preload_task = asyncio.create_task(preload_reader())
