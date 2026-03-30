@@ -1,60 +1,100 @@
 import asyncio
-import json
 import logging
 import os
 import re
-import sys
 import tempfile
 
 import discord
 import wavelink
 
+from PIL import Image, ImageFilter, ImageOps
 from discord import app_commands
 from discord.ext import commands
 
 from music_core import MusicPlayer, start_track, send_control_message, send_temporary_followup
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
-OCR_TIMEOUT = 180
+OCR_TIMEOUT = 45
 SEARCH_TIMEOUT = 12
 MAX_OCR_TRACKS = 8
 MAX_SEARCH_CANDIDATES = 6
-OCR_WORKER_PATH = os.path.join(os.path.dirname(__file__), "ocr_worker.py")
+OCR_MAX_SIDE = 1600
 
 logger = logging.getLogger(__name__)
+
+ocr_engine = None
+ocr_engine_lock = asyncio.Lock()
+
+
+def _build_ocr_engine():
+
+    from rapidocr_onnxruntime import RapidOCR
+
+    return RapidOCR()
+
+
+def _prepare_ocr_image(source_path: str) -> str:
+
+    with Image.open(source_path) as image:
+        prepared = image.convert("RGB")
+        prepared.thumbnail((OCR_MAX_SIDE, OCR_MAX_SIDE), Image.Resampling.LANCZOS)
+        prepared = ImageOps.autocontrast(prepared)
+        prepared = prepared.filter(ImageFilter.SHARPEN)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            prepared.save(tmp.name, format="PNG", optimize=True)
+            return tmp.name
+
+
+def _run_ocr(engine, path: str) -> list[str]:
+
+    result, _elapsed = engine(path)
+    if not result:
+        return []
+
+    lines = []
+    for item in result:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+
+        text = str(item[1]).strip()
+        if text:
+            lines.append(text)
+
+    return lines
+
+
+async def get_ocr_engine():
+    global ocr_engine
+
+    async with ocr_engine_lock:
+        if ocr_engine is None:
+            try:
+                ocr_engine = await asyncio.to_thread(_build_ocr_engine)
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "Модуль rapidocr-onnxruntime не установлен. Установи зависимости из requirements.txt"
+                ) from exc
+            except Exception as exc:
+                raise RuntimeError("OCR не удалось инициализировать") from exc
+
+    return ocr_engine
 
 
 async def run_ocr(path: str) -> list[str]:
 
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        OCR_WORKER_PATH,
-        path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    prepared_path = None
 
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=OCR_TIMEOUT)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        raise
-
-    if proc.returncode != 0:
-        error_text = stderr.decode("utf-8", errors="ignore").strip()
-        raise RuntimeError(error_text or f"OCR worker exited with code {proc.returncode}")
-
-    try:
-        payload = json.loads(stdout.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("OCR worker returned invalid response") from exc
-
-    lines = payload.get("lines")
-    if not isinstance(lines, list):
-        raise RuntimeError("OCR worker returned invalid lines")
-
-    return [str(line).strip() for line in lines if str(line).strip()]
+        prepared_path = await asyncio.to_thread(_prepare_ocr_image, path)
+        engine = await get_ocr_engine()
+        return await asyncio.to_thread(_run_ocr, engine, prepared_path)
+    finally:
+        if prepared_path and os.path.exists(prepared_path):
+            try:
+                os.remove(prepared_path)
+            except OSError:
+                logger.warning("Не удалось удалить временный OCR-prep файл: %s", prepared_path)
 
 
 def extract_tracks(lines):
@@ -196,11 +236,6 @@ class OCRMusic(commands.Cog):
             return
 
         await interaction.response.defer(thinking=True)
-        await send_temporary_followup(
-            interaction,
-            content="🖼️ Распознаю скриншот. Первый запуск после рестарта может занять до 2-3 минут.",
-            delete_after=8,
-        )
 
         path = None
 
@@ -209,7 +244,7 @@ class OCRMusic(commands.Cog):
                 await image.save(tmp.name)
                 path = tmp.name
 
-            text_lines = await run_ocr(path)
+            text_lines = await asyncio.wait_for(run_ocr(path), timeout=OCR_TIMEOUT)
         except asyncio.TimeoutError:
             await interaction.followup.send(
                 "❌ OCR занял слишком много времени",
