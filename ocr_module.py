@@ -18,7 +18,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024
 OCR_TIMEOUT = 45
 SEARCH_TIMEOUT = 12
 MAX_OCR_TRACKS = 8
-MAX_SEARCH_CANDIDATES = 6
+MAX_SEARCH_CANDIDATES = 10
 OCR_MAX_SIDE = 1600
 OCR_MIN_SCORE = 0.35
 OCR_LINE_Y_THRESHOLD = 10
@@ -241,7 +241,17 @@ def score_track_match(track, title: str, artist: str) -> float:
     title_overlap = len(title_tokens & actual_title_tokens) / max(len(title_tokens), 1)
     artist_overlap = len(artist_tokens & actual_artist_tokens) / max(len(artist_tokens), 1)
 
-    return (title_score * 0.45) + (artist_score * 0.35) + (title_overlap * 0.15) + (artist_overlap * 0.05)
+    artist_bonus = 0.15 if expected_artist and expected_artist in actual_artist else 0.0
+    title_bonus = 0.1 if expected_title and expected_title in actual_title else 0.0
+
+    return (
+        (title_score * 0.3)
+        + (artist_score * 0.35)
+        + (title_overlap * 0.1)
+        + (artist_overlap * 0.15)
+        + artist_bonus
+        + title_bonus
+    )
 
 
 def build_ocr_search_queries(title: str, artist: str) -> list[str]:
@@ -256,12 +266,15 @@ def build_ocr_search_queries(title: str, artist: str) -> list[str]:
     variants = [
         f"{title_clean} {artist_clean}",
         title_clean,
+        artist_clean,
         f"{artist_clean} {title_clean}",
         f"{title_cyr} {artist_cyr}",
         title_cyr,
+        artist_cyr,
         f"{artist_cyr} {title_cyr}",
         f"{raw_title} {raw_artist}",
         raw_title,
+        raw_artist,
         f"{raw_artist} {raw_title}",
     ]
 
@@ -313,7 +326,7 @@ async def search_ocr_track(title: str, artist: str):
             len(results) if hasattr(results, "__len__") else "?",
         )
 
-        for track in list(results)[:5]:
+        for track in list(results)[:10]:
             score = score_track_match(track, title, artist)
             logger.info(
                 "OCR candidate score=%.3f query=%s track=%s author=%s",
@@ -326,7 +339,7 @@ async def search_ocr_track(title: str, artist: str):
                 best_score = score
                 best_track = track
 
-        if best_score >= 0.72:
+        if best_score >= 0.68:
             break
 
     return best_track
