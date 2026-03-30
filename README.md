@@ -134,6 +134,18 @@ sudo journalctl -u musicbot -f
 
 For youtube-source plugin based playback, use `lavalink.server.sources.youtube: false` and `plugins.youtube.enabled: true`.
 
+### OCR tuning
+
+By default `/playimage` uses `tesseract` when it is installed, then falls back to EasyOCR.
+
+For Ubuntu 24, the simple fast path can be enabled with:
+
+```bash
+sudo apt install tesseract-ocr tesseract-ocr-rus tesseract-ocr-eng
+```
+
+To force EasyOCR only, set `OCR_ENGINE=easyocr` in `.env`.
+
 ## Notes For GitHub
 
 - Do not commit `.env`

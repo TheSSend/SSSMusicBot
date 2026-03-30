@@ -5,6 +5,7 @@ import re
 import tempfile
 import os
 import logging
+import shutil
 
 from PIL import Image, ImageOps, ImageFilter
 
@@ -15,6 +16,7 @@ from music_core import MusicPlayer, start_track, send_control_message, send_temp
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
 OCR_MAX_SIDE = 1600
+OCR_ENGINE = os.getenv("OCR_ENGINE", "auto").strip().lower()
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,36 @@ def _read_ocr_text(reader_obj, path: str):
         link_threshold=0.4,
     )
 
+
+async def _run_tesseract_ocr(path: str) -> list[str]:
+
+    tesseract = shutil.which("tesseract")
+    if not tesseract:
+        raise FileNotFoundError("tesseract not found")
+
+    proc = await asyncio.create_subprocess_exec(
+        tesseract,
+        path,
+        "stdout",
+        "--oem",
+        "1",
+        "--psm",
+        "6",
+        "-l",
+        "rus+eng",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    stdout, stderr = await proc.communicate()
+
+    if proc.returncode != 0:
+        error_text = stderr.decode("utf-8", errors="ignore").strip()
+        raise RuntimeError(error_text or f"tesseract exited with code {proc.returncode}")
+
+    text = stdout.decode("utf-8", errors="ignore")
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
 async def get_reader():
     global reader
 
@@ -82,13 +114,24 @@ async def get_reader():
 
 async def run_ocr(path):
     loop = asyncio.get_running_loop()
-    r = await get_reader()
 
     prepared_path = None
 
     try:
         prepared_path = await loop.run_in_executor(None, _prepare_ocr_image, path)
 
+        if OCR_ENGINE in {"auto", "tesseract"}:
+            try:
+                return await _run_tesseract_ocr(prepared_path)
+            except FileNotFoundError:
+                if OCR_ENGINE == "tesseract":
+                    raise RuntimeError("tesseract не установлен")
+            except Exception as exc:
+                if OCR_ENGINE == "tesseract":
+                    raise RuntimeError(f"Tesseract OCR failed: {exc}") from exc
+                logger.warning("Tesseract OCR failed, falling back to EasyOCR: %s", exc)
+
+        r = await get_reader()
         result = await loop.run_in_executor(
             None,
             _read_ocr_text,
@@ -106,6 +149,10 @@ async def run_ocr(path):
 
 
 async def preload_ocr():
+
+    if OCR_ENGINE == "tesseract" or (OCR_ENGINE == "auto" and shutil.which("tesseract")):
+        logger.info("Tesseract OCR selected, EasyOCR preload skipped")
+        return
 
     try:
         await get_reader()
