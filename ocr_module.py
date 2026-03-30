@@ -16,6 +16,8 @@ from music_core import MusicPlayer, start_track, send_control_message, send_temp
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
 OCR_TIMEOUT = 45
+SEARCH_TIMEOUT = 12
+MAX_OCR_TRACKS = 8
 OCR_WORKER_PATH = os.path.join(os.path.dirname(__file__), "ocr_worker.py")
 
 logger = logging.getLogger(__name__)
@@ -81,7 +83,7 @@ def extract_tracks(lines):
         artist = cleaned[i + 1]
         tracks.append((artist.strip(), title.strip()))
 
-    return tracks[:20]
+    return tracks[:MAX_OCR_TRACKS]
 
 
 class OCRMusic(commands.Cog):
@@ -157,6 +159,12 @@ class OCRMusic(commands.Cog):
             )
             return
 
+        await send_temporary_followup(
+            interaction,
+            content=f"🔎 Распознано треков: **{len(tracks)}**. Ищу совпадения...",
+            delete_after=5,
+        )
+
         player = interaction.guild.voice_client
 
         if not player:
@@ -165,7 +173,16 @@ class OCRMusic(commands.Cog):
         added = []
 
         for artist, title in tracks:
-            results = await wavelink.Playable.search(f"{artist} {title}")
+            query = f"{artist} {title}"
+
+            try:
+                results = await asyncio.wait_for(wavelink.Playable.search(query), timeout=SEARCH_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.warning("OCR search timed out for query=%s", query)
+                continue
+            except Exception:
+                logger.exception("OCR search failed for query=%s", query)
+                continue
 
             if not results:
                 continue
