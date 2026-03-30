@@ -324,12 +324,16 @@ async def send_temporary_followup(
     delete_after: int = 5,
 ):
 
-    message = await interaction.followup.send(
-        content=content,
-        embed=embed,
-        view=view,
-        wait=True,
-    )
+    kwargs = {
+        "content": content,
+        "embed": embed,
+        "wait": True,
+    }
+
+    if view is not None:
+        kwargs["view"] = view
+
+    message = await interaction.followup.send(**kwargs)
 
     async def _delete_later():
         try:
