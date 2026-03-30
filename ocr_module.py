@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import logging
 import os
 import re
@@ -204,6 +205,45 @@ def replace_confusable_latin_with_cyrillic(value: str) -> str:
     return value.translate(translation)
 
 
+def build_match_text(value: str) -> str:
+
+    value = normalize_ocr_text(value)
+    value = replace_confusable_latin_with_cyrillic(value)
+    value = value.lower()
+    value = re.sub(r"[^\w\s]", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
+
+
+def similarity_score(left: str, right: str) -> float:
+
+    if not left or not right:
+        return 0.0
+
+    return difflib.SequenceMatcher(None, left, right).ratio()
+
+
+def score_track_match(track, title: str, artist: str) -> float:
+
+    expected_title = build_match_text(title)
+    expected_artist = build_match_text(artist)
+    actual_title = build_match_text(getattr(track, "title", "") or "")
+    actual_artist = build_match_text(getattr(track, "author", "") or "")
+
+    title_score = similarity_score(expected_title, actual_title)
+    artist_score = similarity_score(expected_artist, actual_artist)
+
+    title_tokens = set(expected_title.split())
+    artist_tokens = set(expected_artist.split())
+    actual_title_tokens = set(actual_title.split())
+    actual_artist_tokens = set(actual_artist.split())
+
+    title_overlap = len(title_tokens & actual_title_tokens) / max(len(title_tokens), 1)
+    artist_overlap = len(artist_tokens & actual_artist_tokens) / max(len(artist_tokens), 1)
+
+    return (title_score * 0.45) + (artist_score * 0.35) + (title_overlap * 0.15) + (artist_overlap * 0.05)
+
+
 def build_ocr_search_queries(title: str, artist: str) -> list[str]:
 
     raw_title = title.strip()
@@ -241,6 +281,8 @@ def build_ocr_search_queries(title: str, artist: str) -> list[str]:
 async def search_ocr_track(title: str, artist: str):
 
     node = wavelink.Pool.get_node()
+    best_track = None
+    best_score = 0.0
 
     for query in build_ocr_search_queries(title, artist):
         candidate = f"ytsearch:{query}"
@@ -261,16 +303,33 @@ async def search_ocr_track(title: str, artist: str):
             logger.exception("Unexpected OCR search failure for query=%s", candidate)
             continue
 
-        if results:
-            logger.info(
-                "OCR search matched query=%s type=%s len=%s",
-                candidate,
-                type(results).__name__,
-                len(results) if hasattr(results, "__len__") else "?",
-            )
-            return results[0]
+        if not results:
+            continue
 
-    return None
+        logger.info(
+            "OCR search matched query=%s type=%s len=%s",
+            candidate,
+            type(results).__name__,
+            len(results) if hasattr(results, "__len__") else "?",
+        )
+
+        for track in list(results)[:5]:
+            score = score_track_match(track, title, artist)
+            logger.info(
+                "OCR candidate score=%.3f query=%s track=%s author=%s",
+                score,
+                candidate,
+                getattr(track, "title", None),
+                getattr(track, "author", None),
+            )
+            if score > best_score:
+                best_score = score
+                best_track = track
+
+        if best_score >= 0.72:
+            break
+
+    return best_track
 
 
 class OCRMusic(commands.Cog):
