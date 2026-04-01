@@ -14,8 +14,8 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from music_core import (
-    MusicPlayer, start_track, send_control_message, build_embed, 
-    MusicControls, display_author, send_temporary_followup,
+    MusicPlayer, start_track, send_control_message, build_embed,
+    build_queue_preview, MusicControls, display_author, send_temporary_followup,
     dump_player_state  # NEW: added for resume
 )
 from edit_guard import safe_message_edit, start_cleanup_task
@@ -675,6 +675,41 @@ async def fetch_best_tracks(node: wavelink.Node, query: str):
     if last_exc is not None:
         raise last_exc
     return []
+
+
+async def get_active_music_player(interaction: discord.Interaction) -> MusicPlayer | None:
+    voice_client = getattr(interaction.guild, "voice_client", None)
+    if not isinstance(voice_client, MusicPlayer):
+        await interaction.response.send_message("❌ Музыка сейчас не играет.", ephemeral=True)
+        return None
+    return voice_client
+
+
+@bot.tree.command(name="np", description="Показать текущий трек")
+async def now_playing(interaction: discord.Interaction):
+    player = await get_active_music_player(interaction)
+    if not player:
+        return
+
+    await interaction.response.send_message(embed=build_embed(player), ephemeral=True)
+
+
+@bot.tree.command(name="queue", description="Показать очередь")
+async def show_queue(interaction: discord.Interaction):
+    player = await get_active_music_player(interaction)
+    if not player:
+        return
+
+    if player.queue.is_empty:
+        await interaction.response.send_message("Очередь пуста.", ephemeral=True)
+        return
+
+    current = player.current_track.title if player.current_track else "Нет трека"
+    text = build_queue_preview(player)
+    await interaction.response.send_message(
+        f"Сейчас играет: **{current}**\n\n{text}",
+        ephemeral=True,
+    )
 
 @bot.tree.command(name="reload", description="Перезагрузить модуль")
 async def reload_extension(interaction: discord.Interaction, extension: str):

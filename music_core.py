@@ -11,6 +11,17 @@ from edit_guard import safe_message_edit
 
 logger = logging.getLogger(__name__)
 
+def build_queue_preview(player: "MusicPlayer", limit: int = 10) -> str:
+    items = list(player.queue)[:limit]
+    if not items:
+        return "Очередь пуста."
+
+    lines = [f"{index + 1}. {track.title}" for index, track in enumerate(items)]
+    remaining = len(player.queue) - len(items)
+    if remaining > 0:
+        lines.append(f"...и еще {remaining} треков")
+    return "\n".join(lines)
+
 def _user_in_same_voice_channel(interaction: discord.Interaction, player: "MusicPlayer") -> bool:
     user = getattr(interaction, "user", None)
     voice = getattr(user, "voice", None)
@@ -268,8 +279,10 @@ class MusicControls(discord.ui.View):
         try:
             await self.player.pause(not self.player.paused)
         except LavalinkException:
-            try: await self.player.disconnect()
-            except Exception: pass
+            try:
+                await self.player.disconnect()
+            except Exception:
+                logger.exception("Failed to disconnect player after pause error")
         else:
             if self.player.control_message:
                 try:
@@ -278,7 +291,8 @@ class MusicControls(discord.ui.View):
                         embed=build_embed(self.player),
                         view=MusicControls(self.player),
                     )
-                except Exception: pass
+                except Exception:
+                    logger.exception("Failed to refresh control message after pause")
 
     @discord.ui.button(label="Следующий", emoji="⏭️", style=discord.ButtonStyle.primary, row=1)
     async def skip(self, interaction: discord.Interaction, _):
@@ -291,7 +305,8 @@ class MusicControls(discord.ui.View):
                 return
             try:
                 await self.player.stop()
-            except Exception: pass
+            except Exception:
+                logger.exception("Failed to skip track")
 
     @discord.ui.button(label="Очередь", emoji="📜", style=discord.ButtonStyle.success, row=1)
     async def queue(self, interaction: discord.Interaction, _):
@@ -323,7 +338,83 @@ class MusicControls(discord.ui.View):
 
         track_title = self.player.current_track.title
         author = self.player.current_track.author
-        
+
+        clean_title = " ".join(str(track_title).split()).strip()
+        clean_author = " ".join(str(author).split()).strip()
+        for suffix in (" - Topic", " (Official Video)", " (Official Music Video)", " (Lyrics)", " Lyrics"):
+            if clean_title.endswith(suffix):
+                clean_title = clean_title[: -len(suffix)].strip()
+        if " - " in clean_title:
+            left, right = [part.strip() for part in clean_title.split(" - ", 1)]
+            if left and right:
+                clean_title, clean_author = right, left
+
+        headers = {
+            "User-Agent": "Musicbot/1.0",
+            "Accept": "application/json,text/plain,*/*",
+        }
+        timeout = aiohttp.ClientTimeout(total=12)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                for title_value, artist_value in (
+                    (clean_title, clean_author),
+                    (track_title, clean_author),
+                    (clean_title, author),
+                ):
+                    if not title_value or not artist_value:
+                        continue
+
+                    params = {
+                        "track_name": title_value,
+                        "artist_name": artist_value,
+                    }
+                    if getattr(self.player.current_track, "album", None):
+                        params["album_name"] = getattr(self.player.current_track, "album")
+                    if getattr(self.player.current_track, "length", None):
+                        params["duration"] = int(getattr(self.player.current_track, "length", 0) or 0) // 1000
+
+                    for endpoint in ("https://lrclib.net/api/get", "https://lrclib.net/api/get_cached"):
+                        try:
+                            async with session.get(endpoint, params=params) as resp:
+                                if resp.status == 200:
+                                    payload = await resp.json()
+                                    lyrics_text = (payload or {}).get("syncedLyrics") or (payload or {}).get("plainLyrics")
+                                    if lyrics_text:
+                                        lyrics_text = str(lyrics_text).strip()
+                                        if len(lyrics_text) > 4000:
+                                            lyrics_text = lyrics_text[:3990] + "...\n(текст слишком длинный)"
+                                        embed = discord.Embed(
+                                            title=f"🎤 Текст: {track_title}",
+                                            description=lyrics_text,
+                                            color=0x9B59B6,
+                                        )
+                                        embed.set_footer(text="Источник: LRCLIB")
+                                        await interaction.followup.send(embed=embed, ephemeral=True)
+                                        return
+                        except Exception:
+                            continue
+
+                    try:
+                        async with session.get(f"https://api.lyrics.ovh/v1/{artist_value}/{title_value}") as resp:
+                            if resp.status == 200:
+                                payload = await resp.json()
+                                lyrics_text = str((payload or {}).get("lyrics") or "").strip()
+                                if lyrics_text:
+                                    if len(lyrics_text) > 4000:
+                                        lyrics_text = lyrics_text[:3990] + "...\n(текст слишком длинный)"
+                                    embed = discord.Embed(
+                                        title=f"🎤 Текст: {track_title}",
+                                        description=lyrics_text,
+                                        color=0x9B59B6,
+                                    )
+                                    embed.set_footer(text="Источник: lyrics.ovh")
+                                    await interaction.followup.send(embed=embed, ephemeral=True)
+                                    return
+                    except Exception:
+                        pass
+        except Exception:
+            logger.exception("Failed to fetch lyrics from fallback services")
+
         normalized = track_title.replace(" - Topic", "").replace(" - Official Music Video", "")
         # Using some-random-api as a stable fallback for lyrics
         api_url = "https://some-random-api.com/lyrics"
@@ -357,15 +448,28 @@ class MusicControls(discord.ui.View):
                 return
             control_message = getattr(self.player, "control_message", None)
             if control_message is not None:
-                try: await control_message.delete()
-                except Exception: pass
+                try:
+                    await control_message.delete()
+                except Exception:
+                    logger.exception("Failed to delete control message on stop")
                 finally: self.player.control_message = None
 
-            try: await self.player.disconnect()
-            except LavalinkException: pass
+            try:
+                await self.player.disconnect()
+            except LavalinkException:
+                logger.exception("Lavalink refused disconnect on stop")
             
-            try: self.player.client.dispatch("music_stopped")
-            except Exception: pass
+            try:
+                self.player.client.dispatch("music_stopped")
+            except Exception:
+                logger.exception("Failed to dispatch music_stopped")
+
+    @discord.ui.button(label="Инфо", emoji="ℹ️", style=discord.ButtonStyle.secondary, row=2)
+    async def info(self, interaction: discord.Interaction, _):
+        await interaction.response.defer(ephemeral=True)
+        if not self.player or not await _require_same_voice_channel(interaction, self.player):
+            return
+        await interaction.followup.send(embed=build_embed(self.player), ephemeral=True)
 
 # ================= START TRACK =================
 
