@@ -159,3 +159,12 @@ Security notes:
 
 - Use a strong token and keep it private.
 - Prefer running behind a reverse proxy with HTTPS if exposing to the internet.
+
+## Lyrics source fallback
+
+If `/text` still misses some tracks, you can enable Genius fallback:
+
+- install dependencies with `pip install -r requirements.txt`
+- set `GENIUS_ACCESS_TOKEN` in `.env`
+
+This uses the `lyricsgenius` client as an additional source before the older public fallbacks.

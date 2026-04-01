@@ -1,6 +1,7 @@
 import discord
 import wavelink
 import asyncio
+import os
 import time
 import logging
 import aiohttp
@@ -348,6 +349,48 @@ class MusicControls(discord.ui.View):
             left, right = [part.strip() for part in clean_title.split(" - ", 1)]
             if left and right:
                 clean_title, clean_author = right, left
+
+        genius_token = os.getenv("GENIUS_ACCESS_TOKEN", "").strip()
+        if genius_token:
+            try:
+                import lyricsgenius
+
+                genius = lyricsgenius.Genius(
+                    genius_token,
+                    timeout=10,
+                    verbose=False,
+                    remove_section_headers=True,
+                    skip_non_songs=True,
+                    excluded_terms=["(Remix)", "(Live)", "(Acoustic)"],
+                )
+
+                for title_value, artist_value in (
+                    (clean_title, clean_author),
+                    (track_title, clean_author),
+                    (clean_title, author),
+                ):
+                    if not title_value:
+                        continue
+
+                    song = genius.search_song(title_value, artist_value or None)
+                    lyrics_text = getattr(song, "lyrics", None) if song else None
+                    if lyrics_text:
+                        lyrics_text = str(lyrics_text).strip()
+                        if len(lyrics_text) > 4000:
+                            lyrics_text = lyrics_text[:3990] + "...\n(текст слишком длинный)"
+
+                        embed = discord.Embed(
+                            title=f"🎤 Текст: {track_title}",
+                            description=lyrics_text,
+                            color=0x9B59B6,
+                        )
+                        embed.set_footer(text="Источник: Genius")
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                        return
+            except ModuleNotFoundError:
+                pass
+            except Exception:
+                logger.exception("Genius lyrics lookup failed")
 
         headers = {
             "User-Agent": "Musicbot/1.0",
