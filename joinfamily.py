@@ -1,14 +1,14 @@
 import discord
-import json
-import os
 import asyncio
 import logging
-from pathlib import Path
-from datetime import datetime, timezone, timedelta
+import os
+from datetime import datetime
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 from runtime_paths import data_path
+from json_store import JsonStore
+from config import OWNER_ID, MOSCOW_TZ, DATE_FORMAT
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -21,7 +21,6 @@ HR_ACCESS = [
     for r in os.getenv("HR_ACCESS", "").split(",")
     if r.strip().isdigit()
 ]
-OWNER_ID = int(os.getenv("OWNER_ID", "0")) if os.getenv("OWNER_ID", "0").isdigit() else 0
 
 # ================= CALL CHANNELS =================
 
@@ -36,32 +35,9 @@ REMOVE_ROLE_ID = int(os.getenv("FAMILY_REMOVE_ROLE_ID", "0"))
 ADD_ROLE_1_ID = int(os.getenv("FAMILY_ADD_ROLE_1_ID", "0"))
 ADD_ROLE_2_ID = int(os.getenv("FAMILY_ADD_ROLE_2_ID", "0"))
 
-# ================= TIME =================
-
-MOSCOW_TZ = timezone(timedelta(hours=3))
-DATE_FORMAT = "%d.%m.%Y %H:%M"
-
 # ================= FILE =================
 
-DATA_FILE = data_path("family_applications.json")
-
-if not DATA_FILE.exists():
-    DATA_FILE.write_text("{}", encoding="utf-8")
-
-
-def load_data():
-    try:
-        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        logger.exception("Не удалось прочитать family_applications.json")
-        return {}
-
-
-def save_data(data):
-    DATA_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+_store = JsonStore(data_path("family_applications.json"))
 
 
 def now_time():
@@ -138,8 +114,9 @@ class JoinFamilyModal(discord.ui.Modal):
             )
             return
 
+        # Single lock block: check for existing open app AND create new record
         async with data_lock:
-            data = load_data()
+            data = _store.load()
             guild_data = data.setdefault(str(interaction.guild.id), {})
             user_apps = guild_data.setdefault(str(interaction.user.id), [])
             previous_apps = list(user_apps)
@@ -152,55 +129,51 @@ class JoinFamilyModal(discord.ui.Modal):
                     )
                     return
 
-        category = interaction.channel.category
+            # Create channel inside lock to prevent double-submit race
+            category = interaction.channel.category
 
-        # ПРАВА ДОСТУПА
-        overwrites = {
-            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True)
-        }
+            overwrites = {
+                interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            }
 
-        for role_id in HR_ACCESS:
-            role = interaction.guild.get_role(role_id)
-            if role:
-                overwrites[role] = discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=True
+            for role_id in HR_ACCESS:
+                role = interaction.guild.get_role(role_id)
+                if role:
+                    overwrites[role] = discord.PermissionOverwrite(
+                        view_channel=True,
+                        send_messages=True
+                    )
+
+            try:
+                channel = await interaction.guild.create_text_channel(
+                    name=f"заявка-{interaction.user.name}".lower(),
+                    category=category,
+                    overwrites=overwrites
                 )
+            except Exception:
+                logger.exception("Не удалось создать канал заявки в семью")
+                await interaction.response.send_message(
+                    "❌ Не удалось создать канал заявки. Проверь права бота.",
+                    ephemeral=True
+                )
+                return
 
-        try:
-            channel = await interaction.guild.create_text_channel(
-                name=f"заявка-{interaction.user.name}".lower(),
-                category=category,
-                overwrites=overwrites
-            )
-        except Exception:
-            logger.exception("Не удалось создать канал заявки в семью")
-            await interaction.response.send_message(
-                "❌ Не удалось создать канал заявки. Проверь права бота.",
-                ephemeral=True
-            )
-            return
+            application = {
+                "nickname": self.nickname.value,
+                "static": self.static.value,
+                "age": self.age.value,
+                "goal": self.goal.value,
+                "about": self.about.value,
+                "created_at": now_time(),
+                "closed": False,
+                "status": "open",
+                "channel_id": channel.id,
+                "log_message_id": None
+            }
 
-        application = {
-            "nickname": self.nickname.value,
-            "static": self.static.value,
-            "age": self.age.value,
-            "goal": self.goal.value,
-            "about": self.about.value,
-            "created_at": now_time(),
-            "closed": False,
-            "status": "open",
-            "channel_id": channel.id,
-            "log_message_id": None
-        }
-
-        async with data_lock:
-            data = load_data()
-            guild_data = data.setdefault(str(interaction.guild.id), {})
-            user_apps = guild_data.setdefault(str(interaction.user.id), [])
             user_apps.append(application)
-            save_data(data)
+            _store.save(data)
 
         # ================= ПРЕДЫДУЩИЕ ЗАЯВКИ =================
 
@@ -276,12 +249,12 @@ class JoinFamilyModal(discord.ui.Modal):
                 log_message = await log_channel.send(embed=embed)
                 application["log_message_id"] = log_message.id
                 async with data_lock:
-                    data = load_data()
+                    data = _store.load()
                     guild_data = data.setdefault(str(interaction.guild.id), {})
                     user_apps = guild_data.setdefault(str(interaction.user.id), [])
                     if user_apps:
                         user_apps[-1]["log_message_id"] = log_message.id
-                        save_data(data)
+                        _store.save(data)
 
         await interaction.response.send_message(
             "✅ Ваша заявка отправлена!",
@@ -316,7 +289,7 @@ class ApplicationManageView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
 
         async with data_lock:
-            data = load_data()
+            data = _store.load()
             guild_data = data.get(str(interaction.guild.id))
             if not guild_data:
                 await interaction.followup.send("❌ Активная заявка не найдена.", ephemeral=True)
@@ -340,7 +313,7 @@ class ApplicationManageView(discord.ui.View):
                 await interaction.followup.send("❌ Активная заявка не найдена.", ephemeral=True)
                 return
 
-            save_data(data)
+            _store.save(data)
 
         for item in self.children:
             item.disabled = True
@@ -377,14 +350,14 @@ class ApplicationManageView(discord.ui.View):
 
                 log_message = await log_channel.send(embed=result_embed)
                 async with data_lock:
-                    data = load_data()
+                    data = _store.load()
                     guild_data = data.get(str(interaction.guild.id), {})
                     apps = guild_data.get(str(self.applicant_id), [])
                     for app in reversed(apps):
                         if app.get("created_at") == application.get("created_at"):
                             app["log_message_id"] = log_message.id
                             break
-                    save_data(data)
+                    _store.save(data)
 
         await interaction.followup.send(
             f"Заявка {status}. Канал удалится через 5 секунд.",
@@ -457,11 +430,11 @@ class JoinFamily(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.bot.add_view(JoinFamilyView(bot))
-        self.bot.loop.create_task(self.restore_active_applications())
+        asyncio.create_task(self.restore_active_applications())
 
     async def restore_active_applications(self):
         await self.bot.wait_until_ready()
-        data = load_data()
+        data = _store.load()
 
         for guild_id, users in data.items():
 

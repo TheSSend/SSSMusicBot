@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 from edit_guard import safe_message_edit
+from config import OWNER_ID
 
 from discord import app_commands
 from discord.ext import commands
@@ -16,12 +17,6 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# Owner ID with validation
-owner_id_str = os.getenv("OWNER_ID")
-if not owner_id_str:
-    raise ValueError("OWNER_ID environment variable is not set")
-OWNER_ID = int(owner_id_str)
-
 # Allowed roles with validation
 ALLOWED_ROLES_RAW = os.getenv("GSAY_ALLOWED_ROLES", "")
 ALLOWED_ROLE_IDS = []
@@ -31,7 +26,7 @@ if ALLOWED_ROLES_RAW:
         if r_stripped.isdigit():
             ALLOWED_ROLE_IDS.append(int(r_stripped))
         else:
-            logger.warning(f"Invalid role ID in GSAY_ALLOWED_ROLES: {r_stripped}")
+            logger.warning("Invalid role ID in GSAY_ALLOWED_ROLES: %s", r_stripped)
 
 # ================= LOCATION CONFIG =================
 
@@ -214,6 +209,23 @@ class GSay(commands.Cog):
                 if not current_message:
                     return
 
+                # Stop updater once target time has passed
+                if datetime.now() >= target_time:
+                    try:
+                        await safe_message_edit(current_message,
+                            embed=self.build_embed(
+                                text,
+                                location_value,
+                                group_code,
+                                time,
+                                target_time,
+                                image
+                            )
+                        )
+                    except Exception:
+                        logger.exception("Не удалось обновить финальное gsay сообщение")
+                    return
+
                 try:
                     await safe_message_edit(current_message,
                         embed=self.build_embed(
@@ -245,7 +257,7 @@ class GSay(commands.Cog):
         await send_new()
 
         # запускаем updater
-        self.bot.loop.create_task(updater())
+        asyncio.create_task(updater())
 
         # ---------- Повторы ----------
         if total_messages > 1:

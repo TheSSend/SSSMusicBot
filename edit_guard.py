@@ -5,14 +5,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 # последний edit по каналу
-_last_channel_edit = {}
+_last_channel_edit: dict[int, float] = {}
 
 # блокировки по каналу
-_channel_locks = {}
+_channel_locks: dict[int, asyncio.Lock] = {}
 
 RATE_LIMIT_SECONDS = 2
 
-# Очистка старых записей каждые час
+# Очистка старых записей каждый час
 _cleanup_task = None
 
 
@@ -37,7 +37,8 @@ async def _periodic_cleanup():
         for channel_id in to_delete:
             _last_channel_edit.pop(channel_id, None)
             _channel_locks.pop(channel_id, None)
-        logger.debug(f"Cleaned up {len(to_delete)} old channel entries")
+        if to_delete:
+            logger.debug("Cleaned up %d old channel entries", len(to_delete))
 
 
 async def safe_message_edit(message, **kwargs) -> None:
@@ -64,6 +65,5 @@ async def safe_message_edit(message, **kwargs) -> None:
         try:
             await message.edit(**kwargs)
             _last_channel_edit[channel_id] = time.time()
-        except Exception as e:
-            logger.error(f"Failed to edit message: {e}")
-            # Don't silently fail - at least log the error
+        except Exception:
+            logger.exception("Failed to edit message in channel %s", channel_id)

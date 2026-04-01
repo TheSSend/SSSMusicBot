@@ -3,6 +3,7 @@ import wavelink
 import asyncio
 import time
 import logging
+import aiohttp
 
 from wavelink import LavalinkException
 
@@ -10,41 +11,30 @@ from edit_guard import safe_message_edit
 
 logger = logging.getLogger(__name__)
 
-
 def display_author(value: str | None) -> str:
-
     if not value:
         return "Неизвестный исполнитель"
-
     normalized = " ".join(value.split()).strip()
-
     for suffix in (" - Topic", " – Topic", " — Topic"):
         if normalized.endswith(suffix):
             normalized = normalized[: -len(suffix)].strip()
             break
-
     return normalized or "Неизвестный исполнитель"
 
-
 def display_requester(value) -> str:
-
     if value is None:
         return "Неизвестно"
-
     mention = getattr(value, "mention", None)
     if mention:
         return mention
-
     name = getattr(value, "display_name", None) or getattr(value, "name", None) or str(value)
     return " ".join(str(name).split()).strip() or "Неизвестно"
 
 # ================= PLAYER =================
 
 class MusicPlayer(wavelink.Player):
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
         self.queue = wavelink.Queue()
         self.control_message: discord.Message | None = None
         self.current_track: wavelink.Playable | None = None
@@ -52,7 +42,6 @@ class MusicPlayer(wavelink.Player):
 
     async def on_voice_state_update(self, data):
         await super().on_voice_state_update(data)
-
         if data.get("channel_id"):
             try:
                 await self._dispatch_voice_update()
@@ -68,7 +57,6 @@ class MusicPlayer(wavelink.Player):
 
     async def _dispatch_voice_update(self):
         voice = self._voice_state.get("voice", {})
-
         session_id = voice.get("session_id")
         token = voice.get("token")
         endpoint = voice.get("endpoint")
@@ -88,14 +76,7 @@ class MusicPlayer(wavelink.Player):
         try:
             await self.node._update_player(self.guild.id, data=request)
         except LavalinkException as exc:
-            logger.error(
-                "Lavalink rejected voice update guild=%s status=%s error=%s path=%s trace=%s",
-                getattr(self.guild, "id", None),
-                exc.status,
-                exc.error,
-                exc.path,
-                exc.trace,
-            )
+            logger.error("Lavalink rejected voice update guild=%s", getattr(self.guild, "id", None))
             await self.disconnect()
         except Exception:
             logger.exception("Unexpected error while dispatching voice update")
@@ -103,35 +84,59 @@ class MusicPlayer(wavelink.Player):
         else:
             self._connection_event.set()
 
+# ================= STATE DUMPER =================
+
+def dump_player_state(player: MusicPlayer, store):
+    """Saves player state for Auto-Resume"""
+    try:
+        if not player.current_track:
+            return
+            
+        guild_id_str = str(player.guild.id)
+        state = store.load()
+
+        queue_encoded = [t.encoded for t in player.queue]
+
+        # Handle position calculation
+        pos = getattr(player, "position", 0)  # sometimes provided by wavelink player object
+        if pos == 0 and player.track_start_time:
+            pos = int((time.time() - player.track_start_time) * 1000)
+
+        pd = {
+            "guild_id": player.guild.id,
+            "channel_id": getattr(player.channel, "id", 0),
+            "text_channel_id": getattr(player.control_message.channel, "id", 0) if player.control_message else 0,
+            "track_encoded": player.current_track.encoded,
+            "position": pos,
+            "queue_encoded": queue_encoded,
+            "filters": {} # Future proofing for saving filters
+        }
+        
+        state[guild_id_str] = pd
+        store.save(state)
+        
+    except Exception:
+        pass # ignore frequent dump errors
 
 # ================= PROGRESS BAR =================
 
 def progress_bar(elapsed, total):
-
     if total <= 0:
         return "░" * 10
-
     ratio = elapsed / total
     filled = int(ratio * 10)
-
     if filled > 10:
         filled = 10
-
     return "▰" * filled + "▱" * (10 - filled)
 
-
 def embed_color(player: MusicPlayer) -> int:
-
     if getattr(player, "paused", False):
         return 0xF1C40F
-
     return 0x57F287
-
 
 # ================= EMBED =================
 
 def build_embed(player: MusicPlayer):
-
     track = player.current_track
 
     if not track:
@@ -141,9 +146,8 @@ def build_embed(player: MusicPlayer):
             color=0x2ecc71
         )
 
-    # Handle case where track_start_time might be None
     if player.track_start_time is None:
-        elapsed = 0
+        elapsed = getattr(player, "position", 0) // 1000
     else:
         elapsed = int(time.time() - player.track_start_time)
         
@@ -160,19 +164,10 @@ def build_embed(player: MusicPlayer):
     )
 
     embed.add_field(name="Трек", value=f"**{track.title}**", inline=False)
-
-    embed.add_field(
-        name="Исполнитель",
-        value=display_author(track.author),
-        inline=True,
-    )
-
+    embed.add_field(name="Исполнитель", value=display_author(track.author), inline=True)
+    
     requester = getattr(track, "requester", None)
-    embed.add_field(
-        name="Включил",
-        value=display_requester(requester),
-        inline=True,
-    )
+    embed.add_field(name="Включил", value=display_requester(requester), inline=True)
 
     embed.add_field(
         name="Прогресс",
@@ -187,32 +182,73 @@ def build_embed(player: MusicPlayer):
     return embed
 
 
-# ================= CONTROLS =================
+# ================= FILTERS MENU =================
 
-class MusicControls(discord.ui.View):
-
+class FiltersSelect(discord.ui.Select):
     def __init__(self, player: MusicPlayer):
-        super().__init__(timeout=None)
         self.player = player
+        options = [
+            discord.SelectOption(label="Обычный (Без Эффектов)", value="reset", emoji="🔄", description="Отключить все эффекты"),
+            discord.SelectOption(label="Bassboost", value="bassboost", emoji="🔊", description="Усиление низких частот"),
+            discord.SelectOption(label="Nightcore", value="nightcore", emoji="🌙", description="Ускорение и высокий питч"),
+            discord.SelectOption(label="Vaporwave", value="vaporwave", emoji="🌊", description="Замедление и низкий питч"),
+        ]
+        super().__init__(placeholder="🎛️ Фильтры звука...", min_values=1, max_values=1, options=options, custom_id="filter_select")
 
-    @discord.ui.button(label="Пауза", emoji="⏸️", style=discord.ButtonStyle.secondary, row=0)
-    async def pause(self, interaction: discord.Interaction, _):
-
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         if not self.player:
             return
 
+        choice = self.values[0]
+        filters = wavelink.Filters()
+
+        if choice == "bassboost":
+            # EQ implementation for basic bassboost
+            filters.equalizer.set(bands=[
+                {"band": 0, "gain": 0.25},
+                {"band": 1, "gain": 0.25},
+                {"band": 2, "gain": 0.15},
+                {"band": 3, "gain": 0.05},
+            ])
+        elif choice == "nightcore":
+            filters.timescale.set(speed=1.2, pitch=1.2, rate=1.0)
+        elif choice == "vaporwave":
+            filters.timescale.set(speed=0.8, pitch=0.8, rate=1.0)
+        
+        try:
+            await self.player.set_filters(filters)
+            # Re-update the select text visually? Only if we wanted dynamic updating
+            if self.player.control_message:
+                 await safe_message_edit(
+                    self.player.control_message,
+                    embed=build_embed(self.player),
+                    view=MusicControls(self.player),
+                )
+        except Exception:
+             logger.exception("Failed to apply Audio Filters")
+
+
+# ================= CONTROLS =================
+
+class MusicControls(discord.ui.View):
+    def __init__(self, player: MusicPlayer):
+        super().__init__(timeout=None)
+        self.player = player
+        
+        # Add the Select Menu directly to the view
+        self.add_item(FiltersSelect(player))
+
+    @discord.ui.button(label="Пауза", emoji="⏸️", style=discord.ButtonStyle.secondary, row=1)
+    async def pause(self, interaction: discord.Interaction, _):
+        if not self.player: return
         await interaction.response.defer()
 
         try:
             await self.player.pause(not self.player.paused)
         except LavalinkException:
-            logger.warning("Pause failed because Lavalink lost the player; disconnecting locally")
-            try:
-                await self.player.disconnect()
-            except Exception:
-                logger.exception("Failed to disconnect player after pause error")
-        except Exception:
-            logger.exception("Unexpected error while toggling pause")
+            try: await self.player.disconnect()
+            except Exception: pass
         else:
             if self.player.control_message:
                 try:
@@ -221,76 +257,88 @@ class MusicControls(discord.ui.View):
                         embed=build_embed(self.player),
                         view=MusicControls(self.player),
                     )
-                except Exception:
-                    logger.exception("Failed to refresh control message after pause toggle")
+                except Exception: pass
 
-    @discord.ui.button(label="Следующий", emoji="⏭️", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Следующий", emoji="⏭️", style=discord.ButtonStyle.primary, row=1)
     async def skip(self, interaction: discord.Interaction, _):
-
         await interaction.response.defer()
-
         if self.player:
             if self.player.queue.is_empty:
                 await interaction.followup.send("📭 Очередь пуста", ephemeral=True)
                 return
-
             try:
                 await self.player.stop()
-            except LavalinkException:
-                logger.warning("Skip failed because Lavalink lost the player; disconnecting locally")
-                try:
-                    await self.player.disconnect()
-                except Exception:
-                    logger.exception("Failed to disconnect player after skip error")
-            except Exception:
-                logger.exception("Unexpected error while skipping track")
+            except Exception: pass
 
     @discord.ui.button(label="Очередь", emoji="📜", style=discord.ButtonStyle.success, row=1)
     async def queue(self, interaction: discord.Interaction, _):
-
         await interaction.response.defer(ephemeral=True)
-
         if self.player.queue.is_empty:
             await interaction.followup.send("📭 Очередь пуста", ephemeral=True)
             return
-
         text = "\n".join(
             f"{i+1}. {t.title}"
             for i, t in enumerate(list(self.player.queue)[:10])
         )
-
+        if len(self.player.queue) > 10:
+            text += f"\n...и еще {len(self.player.queue) - 10} треков"
         await interaction.followup.send(text, ephemeral=True)
 
-    @discord.ui.button(label="Стоп", emoji="⏹️", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="Текст", emoji="🎤", style=discord.ButtonStyle.secondary, row=2)
+    async def lyrics(self, interaction: discord.Interaction, _):
+        """Fetch lyrics from public API"""
+        await interaction.response.defer(ephemeral=True)
+        
+        if not self.player or not self.player.current_track:
+            await interaction.followup.send("❌ Нет играющего трека.", ephemeral=True)
+            return
+
+        track_title = self.player.current_track.title
+        author = self.player.current_track.author
+        
+        normalized = track_title.replace(" - Topic", "").replace(" - Official Music Video", "")
+        # Using some-random-api as a stable fallback for lyrics
+        api_url = f"https://some-random-api.com/lyrics?title={normalized} {author}"
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        lyrics_text = data.get("lyrics", "")
+                        
+                        if len(lyrics_text) > 4000:
+                            lyrics_text = lyrics_text[:3990] + "...\n(текст слишком длинный)"
+                            
+                        embed = discord.Embed(title=f"🎤 Текст: {track_title}", description=lyrics_text, color=0x9B59B6)
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                        return
+                    else:
+                        await interaction.followup.send("❌ Текст не найден в открытой базе.", ephemeral=True)
+        except Exception:
+            logger.exception("Ошибка при запросе текста песни")
+            await interaction.followup.send("❌ Возникла ошибка при поиске текста.", ephemeral=True)
+
+
+    @discord.ui.button(label="Стоп", emoji="⏹️", style=discord.ButtonStyle.danger, row=2)
     async def stop(self, interaction: discord.Interaction, _):
-
         await interaction.response.defer()
-
         if self.player:
             control_message = getattr(self.player, "control_message", None)
-
             if control_message is not None:
-                try:
-                    await control_message.delete()
-                except discord.NotFound:
-                    pass
-                except Exception:
-                    logger.exception("Unexpected error while deleting control message on stop")
-                finally:
-                    self.player.control_message = None
+                try: await control_message.delete()
+                except Exception: pass
+                finally: self.player.control_message = None
 
-            try:
-                await self.player.disconnect()
-            except LavalinkException:
-                logger.warning("Stop failed because Lavalink lost the player; forcing local cleanup")
-            except Exception:
-                logger.exception("Unexpected error while stopping player")
-
+            try: await self.player.disconnect()
+            except LavalinkException: pass
+            
+            try: self.player.client.dispatch("music_stopped")
+            except Exception: pass
 
 # ================= START TRACK =================
 
 async def start_track(player: MusicPlayer, track, auto: bool):
-
     player.current_track = track
     player.track_start_time = time.time()
 
@@ -301,7 +349,8 @@ async def start_track(player: MusicPlayer, track, auto: bool):
         return
 
     try:
-        await player.set_volume(100)
+        if player.volume != 100:
+            await player.set_volume(100)
     except Exception:
         logger.exception("Не удалось установить громкость плеера")
 
@@ -312,24 +361,19 @@ async def start_track(player: MusicPlayer, track, auto: bool):
             view=MusicControls(player)
         )
 
-
 # ================= CONTROL MESSAGE =================
 
 async def send_control_message(interaction: discord.Interaction, player: MusicPlayer):
-
     embed = discord.Embed(
         title="🎵 Музыка",
         description="Загрузка...",
         color=0x57F287,
     )
-
     message = await interaction.followup.send(
         embed=embed,
         view=MusicControls(player)
     )
-
     player.control_message = message
-
 
 async def send_temporary_followup(
     interaction: discord.Interaction,
@@ -339,13 +383,11 @@ async def send_temporary_followup(
     view=None,
     delete_after: int = 5,
 ):
-
     kwargs = {
         "content": content,
         "embed": embed,
         "wait": True,
     }
-
     if view is not None:
         kwargs["view"] = view
 
@@ -360,8 +402,5 @@ async def send_temporary_followup(
             return
         except discord.NotFound:
             return
-        except Exception:
-            logger.exception("Failed to delete temporary followup message")
-
     asyncio.create_task(_delete_later())
     return message

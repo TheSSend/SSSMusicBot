@@ -3,8 +3,6 @@ PyNaCl>=1.5
 wavelink>=2.0
 rapidocr-onnxruntime>=1.4
 aiohttp>=3.0
-beautifulsoup4>=4.0
 python-dotenv>=0.19
 uvloop>=0.19; platform_system != "Windows"
 yt-dlp>=2025.0.0
-selenium>=4.0

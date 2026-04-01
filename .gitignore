@@ -18,7 +18,6 @@ bot-runtime.log
 family_applications.json
 giveaways.json
 signups.json
-forum_eye.db
 
 lavalink/logs/
 lavalink/plugins/

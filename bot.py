@@ -1,18 +1,25 @@
 import discord
-import aiohttp
 import wavelink
 import asyncio
 import os
 import sys
 import logging
+import base64
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-from music_core import MusicPlayer, start_track, send_control_message, build_embed, MusicControls, display_author, send_temporary_followup
+
+from music_core import (
+    MusicPlayer, start_track, send_control_message, build_embed, 
+    MusicControls, display_author, send_temporary_followup,
+    dump_player_state  # NEW: added for resume
+)
 from edit_guard import safe_message_edit, start_cleanup_task
+from json_store import JsonStore
+from runtime_paths import data_path
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +33,9 @@ YOUTUBE_HOSTS = {
 
 _music_update_task: asyncio.Task | None = None
 _idle_disconnect_tasks: dict[int, asyncio.Task] = {}
+
+# Store for player resumes
+state_store = JsonStore(data_path("player_state.json"))
 
 # ================= LOGGING =================
 
@@ -103,7 +113,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ================= PRESENCE =================
 
 async def update_presence(player=None):
-
     if bot.ws is None:
         return
 
@@ -130,9 +139,7 @@ async def update_presence(player=None):
         except Exception:
             logger.exception("Не удалось обновить стандартный presence")
 
-
 def cancel_idle_disconnect(player_or_guild_id):
-
     guild_id = player_or_guild_id
     if hasattr(player_or_guild_id, "guild") and getattr(player_or_guild_id.guild, "id", None):
         guild_id = player_or_guild_id.guild.id
@@ -141,9 +148,7 @@ def cancel_idle_disconnect(player_or_guild_id):
     if task and not task.done():
         task.cancel()
 
-
 def schedule_idle_disconnect(player: MusicPlayer, delay: int = 10):
-
     guild_id = getattr(player.guild, "id", None)
     if guild_id is None:
         return
@@ -179,9 +184,7 @@ def schedule_idle_disconnect(player: MusicPlayer, delay: int = 10):
 
     _idle_disconnect_tasks[guild_id] = asyncio.create_task(_runner())
 
-
 async def music_controls_updater():
-
     await bot.wait_until_ready()
 
     while not bot.is_closed():
@@ -190,6 +193,9 @@ async def music_controls_updater():
             for player in node.players.values():
                 if not player or not getattr(player, "current_track", None):
                     continue
+
+                # Auto-resume state dumping
+                dump_player_state(player, state_store)
 
                 if not getattr(player, "control_message", None):
                     continue
@@ -210,7 +216,6 @@ async def music_controls_updater():
 # ================= SETUP =================
 
 async def setup_hook():
-
     logger.info("setup_hook: начало выполнения")
 
     for extension in (
@@ -226,8 +231,6 @@ async def setup_hook():
         except Exception:
             logger.exception("Ошибка загрузки модуля %s", extension)
 
-    # ================= SYNC =================
-
     try:
         if GUILD_ID is not None:
             guild = discord.Object(id=GUILD_ID)
@@ -239,12 +242,9 @@ async def setup_hook():
             synced = await bot.tree.sync()
             logger.info("Команды синхронизированы глобально: %s", [cmd.name for cmd in synced])
     except Exception as e:
-        logger.error(f"Ошибка синхронизации: {e}")
-
-    # ================= LAVALINK =================
+        logger.error("Ошибка синхронизации: %s", e)
 
     logger.info("Подключение к Lavalink...")
-
     node = wavelink.Node(
         uri=f"http://{LAVALINK_HOST}:{LAVALINK_PORT}",
         password=LAVALINK_PASSWORD
@@ -257,9 +257,8 @@ async def setup_hook():
         )
         logger.info("Lavalink подключен")
     except Exception as e:
-        logger.error(f"Lavalink ошибка: {e}")
+        logger.error("Lavalink ошибка: %s", e)
 
-    # Start cleanup task for edit_guard
     start_cleanup_task()
 
     global _music_update_task
@@ -272,20 +271,73 @@ bot.setup_hook = setup_hook
 
 @bot.event
 async def on_wavelink_node_ready(payload):
-
     logger.info("Lavalink node ready: %s", payload.node.identifier)
     await update_presence()
 
+    # ---- Auto Resume Implementation ----
+    state = state_store.load()
+    to_delete = []
+
+    for guild_id_str, pd in state.items():
+        guild = bot.get_guild(int(guild_id_str))
+        if not guild:
+            continue
+            
+        voice_channel = guild.get_channel(pd.get("channel_id"))
+        if not voice_channel:
+            to_delete.append(guild_id_str)
+            continue
+
+        try:
+            player = await voice_channel.connect(cls=MusicPlayer)
+            
+            # Restore current track
+            current_encoded = pd.get("track_encoded")
+            if current_encoded:
+                tracks = await wavelink.Playable.search(current_encoded)
+                if tracks:
+                    track = tracks[0] if isinstance(tracks, list) else tracks
+                    await player.play(track)
+                    
+                    pos = pd.get("position", 0)
+                    if pos > 0:
+                        await player.seek(pos)
+                        player.track_start_time = asyncio.get_event_loop().time() - (pos / 1000)
+
+            # Restore queue
+            for q_encoded in pd.get("queue_encoded", []):
+                q_tracks = await wavelink.Playable.search(q_encoded)
+                if q_tracks:
+                    q_track = q_tracks[0] if isinstance(q_tracks, list) else q_tracks
+                    player.queue.put(q_track)
+
+            # Restore control message
+            text_channel = guild.get_channel(pd.get("text_channel_id", 0))
+            if text_channel:
+                msg = await text_channel.send(
+                    embed=build_embed(player),
+                    view=MusicControls(player)
+                )
+                player.control_message = msg
+
+        except Exception:
+            logger.exception("Failed to auto-resume player for guild %s", guild_id_str)
+            to_delete.append(guild_id_str)
+
+    # Cleanup invalid states
+    if to_delete:
+        for gd in to_delete:
+            state.pop(gd, None)
+        state_store.save(state)
+
 @bot.event
 async def on_wavelink_node_disconnected(payload):
-
     logger.warning("Lavalink node disconnected: %s", payload.reason)
 
 # ================= TRACK END =================
 
 @bot.listen("on_wavelink_track_end")
 async def on_track_end(payload: wavelink.TrackEndEventPayload):
-
     player = payload.player
     reason = payload.reason
 
@@ -293,16 +345,12 @@ async def on_track_end(payload: wavelink.TrackEndEventPayload):
 
     if not player:
         return
-
     if reason == "REPLACED":
         return
 
     if not player.queue.is_empty:
-
         cancel_idle_disconnect(player)
-
         next_track = await player.queue.get_wait()
-
         await start_track(player, next_track, False)
         await update_presence(player)
         return
@@ -313,31 +361,33 @@ async def on_track_end(payload: wavelink.TrackEndEventPayload):
     player.current_track = None
     player.track_start_time = None
 
+    # Clear state when queue ends
+    state = state_store.load()
+    if str(player.guild.id) in state:
+        state.pop(str(player.guild.id), None)
+        state_store.save(state)
+
     await update_presence(None)
     schedule_idle_disconnect(player, delay=10)
 
-# ================= PLAYER DESTROY =================
-
 @bot.listen("on_wavelink_player_destroy")
 async def on_player_destroy(payload):
+    await update_presence(None)
 
+@bot.event
+async def on_music_stopped():
     await update_presence(None)
 
 # ================= PLAY COMMAND =================
 
 @bot.tree.command(
     name="play",
-    description="🎵 Воспроизвести трек или добавить в очередь"
+    description="🎵 Воспроизвести трек, плейлист или ссылку"
 )
-@app_commands.describe(query="Название трека или ссылка")
-
+@app_commands.describe(query="Название трека, ссылка на YouTube/Spotify")
 async def play(interaction: discord.Interaction, query: str):
-
     if not interaction.user.voice:
-        await interaction.response.send_message(
-            "❌ Ты не в голосовом канале",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ Ты не в голосовом канале", ephemeral=True)
         return
 
     await interaction.response.defer(thinking=True)
@@ -346,43 +396,25 @@ async def play(interaction: discord.Interaction, query: str):
 # ================= PLAY LOGIC =================
 
 async def play_music(interaction: discord.Interaction, query: str):
-
     try:
         node = wavelink.Pool.get_node()
-
         if not node:
-            await interaction.followup.send(
-                "❌ Lavalink не подключен.",
-                ephemeral=True
-            )
+            await interaction.followup.send("❌ Lavalink не подключен.", ephemeral=True)
             return
 
-        # ================= CONNECT =================
-
         channel = interaction.user.voice.channel
-
         bot_member = interaction.guild.me
+
         if bot_member is None:
-            await interaction.followup.send(
-                "❌ Не удалось получить данные бота на сервере.",
-                ephemeral=True
-            )
+            await interaction.followup.send("❌ Не удалось получить данные бота на сервере.", ephemeral=True)
             return
 
         permissions = channel.permissions_for(bot_member)
-
         if not permissions.connect:
-            await interaction.followup.send(
-                "❌ У бота нет права подключаться к этому голосовому каналу.",
-                ephemeral=True
-            )
+            await interaction.followup.send("❌ У бота нет права подключаться к этому голосовому каналу.", ephemeral=True)
             return
-
         if not permissions.speak:
-            await interaction.followup.send(
-                "❌ У бота нет права говорить в этом голосовом канале.",
-                ephemeral=True
-            )
+            await interaction.followup.send("❌ У бота нет права говорить в этом голосовом канале.", ephemeral=True)
             return
 
         voice_client = interaction.guild.voice_client
@@ -398,90 +430,63 @@ async def play_music(interaction: discord.Interaction, query: str):
                 logger.exception("Не удалось отключить старый voice client")
 
         if player:
-
             if player.channel != channel:
                 logger.info("Перемещаю плеер в другой голосовой канал")
                 await player.move_to(channel)
-
         else:
             try:
-                player = await channel.connect(
-                    cls=MusicPlayer,
-                    self_deaf=True,
-                    timeout=60.0,
-                    reconnect=False
-                )
+                player = await channel.connect(cls=MusicPlayer, self_deaf=True, timeout=60.0, reconnect=False)
             except wavelink.ChannelTimeoutException:
-                logger.warning("Таймаут подключения к голосовому каналу, пробую повторно")
-
                 stale_client = interaction.guild.voice_client
                 if stale_client is not None:
                     try:
                         await stale_client.disconnect(force=True)
                     except Exception:
-                        logger.exception("Не удалось отключить stale voice client после таймаута")
-
+                        pass
                 await asyncio.sleep(2)
-
-                player = await channel.connect(
-                    cls=MusicPlayer,
-                    self_deaf=True,
-                    timeout=60.0,
-                    reconnect=False
-                )
+                player = await channel.connect(cls=MusicPlayer, self_deaf=True, timeout=60.0, reconnect=False)
             except Exception:
-                logger.exception("Не удалось подключить плеер к голосовому каналу %s", channel.id)
-                await interaction.followup.send(
-                    "❌ Не удалось подключиться к голосовому каналу. Проверь права `Подключаться`/`Говорить` и попробуй снова.",
-                    ephemeral=True
-                )
+                await interaction.followup.send("❌ Не удалось подключиться к голосовому каналу.", ephemeral=True)
                 return
 
             await asyncio.sleep(1)
 
         if player is None:
-            await interaction.followup.send(
-                "❌ Не удалось подключиться к голосовому каналу.",
-                ephemeral=True
-            )
+            await interaction.followup.send("❌ Не удалось подключиться.", ephemeral=True)
             return
 
-        # ================= SEARCH =================
-
         normalized = query.strip()
-
         try:
             results = await fetch_best_tracks(node, normalized)
         except wavelink.LavalinkLoadException as exc:
-            logger.warning("Search failed %s: %s", normalized, exc)
-            await interaction.followup.send(
-                "❌ Не удалось загрузить треки, попробуй другой запрос.",
-                ephemeral=True,
-            )
+            await interaction.followup.send("❌ Не удалось загрузить треки.", ephemeral=True)
             return
         except wavelink.LavalinkException:
-            logger.exception("Node load failed %s", normalized)
-            await interaction.followup.send(
-                "❌ Ошибка поиска на стороне Lavalink — проверь лог",
-                ephemeral=True,
-            )
+            await interaction.followup.send("❌ Ошибка поиска на стороне Lavalink.", ephemeral=True)
             return
 
         if not results:
             await interaction.followup.send("❌ Ничего не найдено")
             return
 
+        # ---- PLAYLIST SUPPORT (NEW) ----
+        tracks = []
+        is_playlist = False
+        playlist_name = "Плейлист"
+
         if isinstance(results, wavelink.Playlist):
-            track = results.tracks[0]
+            tracks = results.tracks
+            is_playlist = True
+            playlist_name = getattr(results, "name", "Плейлист")
         else:
-            track = results[0]
+            tracks = [results[0]]
 
-        track.requester = interaction.user
+        for t in tracks:
+            t.requester = interaction.user
 
-        # ================= PLAY =================
+        first_track = tracks[0]
 
         if not player.playing and not player.paused:
-
             cancel_idle_disconnect(player)
 
             if not player.control_message:
@@ -489,99 +494,90 @@ async def play_music(interaction: discord.Interaction, query: str):
 
             await asyncio.sleep(0.5)
 
-            await start_track(player, track, False)
-
+            await start_track(player, first_track, False)
             await update_presence(player)
 
-            await send_temporary_followup(
-                interaction,
-                content=f"🎵 Сейчас играет: **{track.title}**",
-                delete_after=5,
-            )
-
+            if is_playlist:
+                for t in tracks[1:]:
+                    await player.queue.put_wait(t)
+                await send_temporary_followup(
+                    interaction,
+                    content=f"🎵 Сейчас играет: **{first_track.title}**\n📥 Добавлен плейлист: **{playlist_name}** ({len(tracks)} треков)",
+                    delete_after=10,
+                )
+            else:
+                await send_temporary_followup(
+                    interaction,
+                    content=f"🎵 Сейчас играет: **{first_track.title}**",
+                    delete_after=5,
+                )
         else:
-
             cancel_idle_disconnect(player)
 
-            await player.queue.put_wait(track)
-
-            await send_temporary_followup(
-                interaction,
-                content=f"🎵 Добавлено в очередь: **{track.title}**",
-                delete_after=5,
-            )
+            if is_playlist:
+                for t in tracks:
+                    await player.queue.put_wait(t)
+                await send_temporary_followup(
+                    interaction,
+                    content=f"📥 Плейлист добавлен в очередь: **{playlist_name}** ({len(tracks)} треков)",
+                    delete_after=10,
+                )
+            else:
+                await player.queue.put_wait(first_track)
+                await send_temporary_followup(
+                    interaction,
+                    content=f"🎵 Добавлено в очередь: **{first_track.title}**",
+                    delete_after=5,
+                )
 
     except Exception as e:
         logger.exception("Ошибка при выполнении команды play")
-        await interaction.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
-
+        await interaction.followup.send(f"❌ Ошибка", ephemeral=True)
 
 def is_youtube_url(value: str) -> bool:
-
     try:
         parsed = urlparse(value)
     except ValueError:
         return False
-
     return parsed.scheme in {"http", "https"} and parsed.netloc.lower() in YOUTUBE_HOSTS
 
-
-def normalize_query(query: str) -> str:
-
-    return query.strip()
-
-
 def sanitize_search_text(value: str) -> str:
-
     cleaned = value.replace("-", " ")
     cleaned = " ".join(cleaned.split())
     return cleaned.strip()
 
-
 def normalize_author(value: str | None) -> str | None:
-
     if not value:
         return None
-
     cleaned = sanitize_search_text(value)
     if cleaned.endswith(" Topic"):
         cleaned = cleaned[:-6].strip()
-
     return cleaned or None
 
+def normalize_query(query: str) -> str:
+    return query.strip()
 
 async def build_search_candidates(query: str) -> list[str]:
-
     normalized = normalize_query(query)
-
     if not normalized:
         return []
-
     candidates: list[str] = []
-
     if is_youtube_url(normalized):
         return candidates
-
     sanitized = sanitize_search_text(normalized)
-
     candidates.append(f"ytsearch:{normalized}")
     if sanitized != normalized:
         candidates.append(f"ytsearch:{sanitized}")
     candidates.append(f"scsearch:{normalized}")
     return candidates
 
-
 def build_metadata_candidates(title: str | None, author: str | None) -> list[str]:
-
     candidates: list[str] = []
-
     title_clean = sanitize_search_text(title or "") or None
     author_clean = normalize_author(author)
-
     combos = []
     if title_clean and author_clean:
         combos.append(f"{title_clean} {author_clean}")
-        combos.append(f"{author_clean} {title_clean}")
     if title_clean:
         combos.append(title_clean)
 
@@ -593,150 +589,79 @@ def build_metadata_candidates(title: str | None, author: str | None) -> list[str
         seen.add(normalized)
         candidates.append(f"ytsearch:{normalized}")
         candidates.append(f"scsearch:{normalized}")
-
     return candidates
 
-
 async def resolve_with_ytdlp(query: str) -> tuple[str | None, str | None]:
-
     try:
         import yt_dlp
     except ImportError:
-        logger.info("yt-dlp is not installed, skipping direct media fallback")
         return None, None
-
     normalized = normalize_query(query)
     if not normalized:
         return None, None
-
-    if is_youtube_url(normalized):
-        target = normalized
-    else:
-        target = f"ytsearch1:{normalized}"
-
+    target = normalized if is_youtube_url(normalized) else f"ytsearch1:{normalized}"
     options = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "noplaylist": True,
-        "extract_flat": False,
+        "quiet": True, "no_warnings": True, "skip_download": True,
+        "noplaylist": True, "extract_flat": False,
         "format": "bestaudio[protocol^=http]/bestaudio/best",
     }
-
     def _extract():
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(target, download=False)
-
-        if not info:
-            return None, None
-
+        if not info: return None, None
         if info.get("entries"):
-            entries = [entry for entry in info["entries"] if entry]
-            if not entries:
-                return None, None
+            entries = [e for e in info["entries"] if e]
+            if not entries: return None, None
             info = entries[0]
-
         title = str(info.get("title") or "").strip() or None
         author = str(info.get("uploader") or info.get("channel") or info.get("artist") or "").strip() or None
         return title, author
-
     try:
         return await asyncio.to_thread(_extract)
     except Exception:
-        logger.exception("yt-dlp fallback failed for %s", normalized)
         return None, None
 
-
 def apply_track_metadata(track, *, title: str | None = None, author: str | None = None):
-
     if title:
-        try:
-            track._title = title
-        except Exception:
-            pass
-
+        try: track._title = title
+        except Exception: pass
     normalized_author = normalize_author(author)
-
     if normalized_author:
-        try:
-            track._author = normalized_author
-        except Exception:
-            pass
+        try: track._author = normalized_author
+        except Exception: pass
 
 async def fetch_best_tracks(node: wavelink.Node, query: str):
-
     candidates = await build_search_candidates(query)
     last_exc = None
 
     for candidate in candidates:
-        logger.info("Searching Lavalink with %s", candidate)
         try:
             results = await wavelink.Pool.fetch_tracks(candidate, node=node)
-        except wavelink.LavalinkLoadException as exc:
-            last_exc = exc
-            logger.warning("Search failed %s: %s", candidate, exc)
-            continue
+            if results: return results
         except wavelink.LavalinkException as exc:
             last_exc = exc
-            logger.exception("Node load failed %s", candidate)
             continue
-
-        logger.info(
-            "Search results for %s: type=%s len=%s",
-            candidate,
-            type(results).__name__,
-            len(results) if hasattr(results, "__len__") else "?",
-        )
-
-        if results:
-            return results
 
     title, author = await resolve_with_ytdlp(query)
     metadata_candidates = build_metadata_candidates(title, author)
 
     for candidate in metadata_candidates:
-        logger.info("Searching Lavalink with yt-dlp metadata %s", candidate)
         try:
             results = await wavelink.Pool.fetch_tracks(candidate, node=node)
-        except wavelink.LavalinkLoadException as exc:
-            logger.warning("Metadata search failed %s: %s", candidate, exc)
-            continue
+            if results: return results
         except wavelink.LavalinkException:
-            logger.exception("Metadata search node error %s", candidate)
             continue
-
-        logger.info(
-            "Search results for yt-dlp metadata %s: type=%s len=%s",
-            candidate,
-            type(results).__name__,
-            len(results) if hasattr(results, "__len__") else "?",
-        )
-
-        if results:
-            return results
-
-    if title or author:
-        logger.info("yt-dlp metadata for %s -> title=%s author=%s", query, title, author)
 
     if last_exc is not None:
         raise last_exc
-
     return []
 
-# ================= RELOAD =================
-
-@bot.tree.command(
-    name="reload",
-    description="Перезагрузить модуль"
-)
+@bot.tree.command(name="reload", description="Перезагрузить модуль")
 async def reload_extension(interaction: discord.Interaction, extension: str):
-
     if interaction.user.id != OWNER_ID:
         await interaction.response.send_message("❌ Нет доступа", ephemeral=True)
         return
-
     await interaction.response.defer(ephemeral=True)
-
     try:
         await bot.reload_extension(extension)
         if GUILD_ID is not None:
@@ -745,57 +670,30 @@ async def reload_extension(interaction: discord.Interaction, extension: str):
             await bot.tree.sync()
         await interaction.followup.send("✅ Перезагружено", ephemeral=True)
     except Exception as e:
-        logger.exception("Ошибка при reload extension %s", extension)
         await interaction.followup.send(f"❌ {e}", ephemeral=True)
-
-# ================= SYNC =================
 
 @bot.tree.command(name="sync")
 async def sync(interaction: discord.Interaction):
-
     if interaction.user.id != OWNER_ID:
         await interaction.response.send_message("❌ Нет доступа", ephemeral=True)
         return
-
     await interaction.response.defer(ephemeral=True)
-
     if GUILD_ID is not None:
         await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     else:
         await bot.tree.sync()
-
     await interaction.followup.send("✅ Синхронизировано", ephemeral=True)
-
-# ================= READY =================
 
 @bot.event
 async def on_ready():
-
     logger.info("Бот %s готов", bot.user)
-    logger.info("Команды: %s", [c.name for c in bot.tree.get_commands()])
-    if GUILD_ID is not None:
-        logger.info("Guild sync target: %s", GUILD_ID)
-        logger.info("Guild commands: %s", [c.name for c in bot.tree.get_commands(guild=discord.Object(id=GUILD_ID))])
-
     await update_presence()
-
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-
     if isinstance(error, app_commands.CommandNotFound):
-        logger.error(
-            "CommandNotFound name=%s guild=%s available_global=%s available_guild=%s",
-            error.name,
-            getattr(interaction.guild, "id", None),
-            [c.name for c in bot.tree.get_commands()],
-            [c.name for c in bot.tree.get_commands(guild=interaction.guild)] if interaction.guild else [],
-        )
         return
-
     logger.exception("Ошибка app command: %s", error)
        
-# ================= RUN =================
-
 if __name__ == "__main__":
     bot.run(TOKEN)

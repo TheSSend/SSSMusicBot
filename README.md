@@ -1,13 +1,12 @@
 # Musicbot
 
-Discord bot with music playback, OCR track parsing, giveaways, signups, forum tracking, and utility modules.
+Discord bot with music playback, OCR track parsing, giveaways, signups, and utility modules.
 
 ## Features
 
 - Music playback through Lavalink + Wavelink
-- OCR-based `/playimage` command via EasyOCR
-- Giveaways and signups stored locally in JSON
-- Forum complaint tracking with SQLite
+- OCR-based `/playimage` command via rapidocr-onnxruntime
+- Giveaways and signups stored locally in JSON (crash-safe atomic writes)
 - Utility modules for announcements and family applications
 
 ## Requirements
@@ -66,12 +65,6 @@ Optional but recommended for performance:
 sudo apt install build-essential python3-dev
 ```
 
-For `forum_search` on Ubuntu 24, install headless Chromium support:
-
-```bash
-sudo apt install chromium-driver chromium
-```
-
 Then use the same Quick Start steps above.
 
 ## systemd on Ubuntu 24
@@ -128,7 +121,9 @@ sudo journalctl -u musicbot -f
 
 - `bot.py` - main bot entrypoint and slash commands
 - `music_core.py` - music player, controls, and voice handshake fix for Lavalink v4
-- `ocr_module.py` - OCR-based music parsing
+- `ocr_module.py` - OCR-based music parsing via rapidocr-onnxruntime
+- `config.py` - shared configuration (OWNER_ID, timezones)
+- `json_store.py` - crash-safe JSON file storage with atomic writes
 - `lavalink/application.yml.example` - example Lavalink config
 - `.env.example` - example environment variables
 

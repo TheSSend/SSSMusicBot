@@ -1,12 +1,12 @@
 import os
-import json
 import asyncio
 import logging
-from pathlib import Path
-from datetime import datetime, timezone, timedelta
 import re
+from datetime import datetime, timezone
 from edit_guard import safe_message_edit
 from runtime_paths import data_path
+from json_store import JsonStore
+from config import MOSCOW_TZ, DATE_FORMAT
 
 import discord
 from discord import app_commands
@@ -16,13 +16,9 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-DATE_FORMAT = "%d.%m.%Y %H:%M"
-MOSCOW_TZ = timezone(timedelta(hours=3))
 data_lock = asyncio.Lock()
 
-DATA_FILE = data_path("signups.json")
-if not DATA_FILE.exists():
-    DATA_FILE.write_text("{}", encoding="utf-8")
+_store = JsonStore(data_path("signups.json"))
 
 SIGNUP_MANAGERS = [
     int(x.strip()) for x in os.getenv("SIGNUP_MANAGERS", "").split(",") if x.strip().isdigit()
@@ -30,21 +26,9 @@ SIGNUP_MANAGERS = [
 SIGNUP_ADMINS = [
     int(x.strip()) for x in os.getenv("SIGNUP_ADMINS", "").split(",") if x.strip().isdigit()
 ]
-OWNER_ID = int(os.getenv("OWNER_ID", "0")) if os.getenv("OWNER_ID", "0").isdigit() else 0
 
-# ================= SAFE DATA =================
-
-def load_data():
-    try:
-        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-def save_data(data):
-    DATA_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+# Import OWNER_ID from shared config
+from config import OWNER_ID
 
 # ================= TIME =================
 
@@ -187,7 +171,7 @@ class SignupView(discord.ui.View):
 
         await interaction.response.defer(ephemeral=True)
         async with data_lock:
-            data = load_data()
+            data = _store.load()
             sign = data.get(str(interaction.message.id))
 
             if not sign or sign.get("closed"):
@@ -211,7 +195,7 @@ class SignupView(discord.ui.View):
                     return
 
             sign["participants"].append({"id": interaction.user.id, "place": place})
-            save_data(data)
+            _store.save(data)
 
         if sign.get("thread_id"):
             thread = interaction.guild.get_thread(sign["thread_id"])
@@ -240,7 +224,7 @@ class SignupView(discord.ui.View):
 
         await interaction.response.defer(ephemeral=True)
         async with data_lock:
-            data = load_data()
+            data = _store.load()
             sign = data.get(str(interaction.message.id))
 
             if not sign or sign.get("closed"):
@@ -251,7 +235,7 @@ class SignupView(discord.ui.View):
                 u for u in sign["participants"] if u["id"] != interaction.user.id
             ]
 
-            save_data(data)
+            _store.save(data)
 
         channel = self.bot.get_channel(sign["channel_id"])
         if not channel:
@@ -274,7 +258,7 @@ class Signups(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.bot.add_view(SignupView(bot))
-        self.bot.loop.create_task(self.restore_signups())
+        asyncio.create_task(self.restore_signups())
 
     def has_permission(self, member: discord.Member) -> bool:
         if member.id == OWNER_ID:
@@ -286,7 +270,7 @@ class Signups(commands.Cog):
 
     async def restore_signups(self):
         await self.bot.wait_until_ready()
-        data = load_data()
+        data = _store.load()
         changed = False
 
         for msg_id, sign in list(data.items()):
@@ -321,15 +305,14 @@ class Signups(commands.Cog):
                 continue
 
             if not sign.get("closed"):
-                self.bot.loop.create_task(self.schedule_end(msg_id))
+                asyncio.create_task(self.schedule_end(msg_id))
 
         if changed:
-            save_data(data)
+            _store.save(data)
 
     async def schedule_end(self, msg_id):
-
         async with data_lock:
-            data = load_data()
+            data = _store.load()
             sign = data.get(msg_id)
 
             if not sign or sign.get("closed"):
@@ -345,15 +328,16 @@ class Signups(commands.Cog):
         if delay > 0:
             await asyncio.sleep(delay)
 
+        # Atomic: load → check → mutate → save in one lock
         async with data_lock:
-            data = load_data()
+            data = _store.load()
             sign = data.get(msg_id)
 
             if not sign or sign.get("closed"):
                 return
 
             sign["closed"] = True
-            save_data(data)
+            _store.save(data)
 
         channel = self.bot.get_channel(sign["channel_id"])
         if not channel:
@@ -364,9 +348,9 @@ class Signups(commands.Cog):
         except discord.NotFound:
             logger.warning("Signup message %s vanished during schedule_end, pruning record", msg_id)
             async with data_lock:
-                data = load_data()
+                data = _store.load()
                 data.pop(msg_id, None)
-                save_data(data)
+                _store.save(data)
             return
         except Exception:
             logger.exception("Не удалось получить signup сообщение для завершения %s", msg_id)
@@ -511,11 +495,11 @@ class Signups(commands.Cog):
         )
 
         async with data_lock:
-            data = load_data()
+            data = _store.load()
             data[str(message.id)] = signup
-            save_data(data)
+            _store.save(data)
 
-        self.bot.loop.create_task(self.schedule_end(str(message.id)))
+        asyncio.create_task(self.schedule_end(str(message.id)))
 
         await interaction.followup.send("✅ Список создан.", ephemeral=True)
 

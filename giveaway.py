@@ -1,51 +1,26 @@
 import discord
 import random
-import json
 import asyncio
 import logging
 import os
-from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from discord import app_commands
 from discord.ext import commands
 from edit_guard import safe_message_edit
 from runtime_paths import data_path
+from json_store import JsonStore
+from config import OWNER_ID, MOSCOW_TZ, DATE_FORMAT
 
 logger = logging.getLogger(__name__)
 data_lock = asyncio.Lock()
 
 # ================= CONFIG =================
 
-DATE_FORMAT = "%d.%m.%Y %H:%M"
-MOSCOW_TZ = timezone(timedelta(hours=3))
-
 # Admin role from environment
 ADMIN_ROLE_ID_STR = os.getenv("GIVEAWAY_ADMIN_ROLE_ID")
 ADMIN_ROLE_ID = int(ADMIN_ROLE_ID_STR) if ADMIN_ROLE_ID_STR and ADMIN_ROLE_ID_STR.isdigit() else None
-OWNER_ID_STR = os.getenv("OWNER_ID", "")
-OWNER_ID = int(OWNER_ID_STR) if OWNER_ID_STR.isdigit() else None
 
-GIVEAWAY_FILE = data_path("giveaways.json")
-
-if not GIVEAWAY_FILE.exists():
-    GIVEAWAY_FILE.write_text("{}", encoding="utf-8")
-
-
-# ================= DATA =================
-
-def load_data():
-    try:
-        return json.loads(GIVEAWAY_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        logger.exception("Не удалось прочитать giveaways.json")
-        return {}
-
-
-def save_data(data):
-    GIVEAWAY_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+_store = JsonStore(data_path("giveaways.json"))
 
 
 # ================= TIME =================
@@ -158,7 +133,7 @@ class GiveawayView(discord.ui.View):
     async def join(self, interaction: discord.Interaction):
         message_id = str(interaction.message.id)
         async with data_lock:
-            data = load_data()
+            data = _store.load()
             giveaway = data.get(message_id)
 
             if not giveaway or giveaway["ended"]:
@@ -175,7 +150,7 @@ class GiveawayView(discord.ui.View):
                 return
 
             giveaway["participants"].append(interaction.user.id)
-            save_data(data)
+            _store.save(data)
 
         await safe_message_edit(
             interaction.message,
@@ -193,23 +168,23 @@ class Giveaway(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.bot.add_view(GiveawayView())
-        self.bot.loop.create_task(self.restore_giveaways())
+        asyncio.create_task(self.restore_giveaways())
 
     def has_admin_role(self, member):
         if ADMIN_ROLE_ID is None:
-            return OWNER_ID is not None and member.id == OWNER_ID
+            return member.id == OWNER_ID
         return ADMIN_ROLE_ID in [r.id for r in member.roles]
 
     async def restore_giveaways(self):
         await self.bot.wait_until_ready()
-        data = load_data()
+        data = _store.load()
 
         for message_id, giveaway in data.items():
             if giveaway.get("ended"):
                 continue
 
-            self.bot.loop.create_task(self.schedule_end(message_id))
-            self.bot.loop.create_task(self.update_loop(message_id))
+            asyncio.create_task(self.schedule_end(message_id))
+            asyncio.create_task(self.update_loop(message_id))
 
     # ================= SAFE UPDATE LOOP =================
 
@@ -217,8 +192,9 @@ class Giveaway(commands.Cog):
         while True:
             await asyncio.sleep(60)
 
-            data = load_data()
-            giveaway = data.get(message_id)
+            async with data_lock:
+                data = _store.load()
+                giveaway = data.get(message_id)
 
             if not giveaway or giveaway.get("ended"):
                 return
@@ -240,8 +216,9 @@ class Giveaway(commands.Cog):
     # ================= SAFE SCHEDULE END =================
 
     async def schedule_end(self, message_id):
-        data = load_data()
-        giveaway = data.get(message_id)
+        async with data_lock:
+            data = _store.load()
+            giveaway = data.get(message_id)
 
         if not giveaway or giveaway.get("ended"):
             return
@@ -260,7 +237,7 @@ class Giveaway(commands.Cog):
 
     async def finish_giveaway(self, message_id):
         async with data_lock:
-            data = load_data()
+            data = _store.load()
             giveaway = data.get(message_id)
 
             if not giveaway or giveaway.get("ended"):
@@ -280,7 +257,7 @@ class Giveaway(commands.Cog):
 
             giveaway["ended"] = True
             giveaway["result_text"] = result_text
-            save_data(data)
+            _store.save(data)
 
         channel = self.bot.get_channel(giveaway["channel_id"])
         if not channel:
@@ -372,12 +349,12 @@ class Giveaway(commands.Cog):
         message = await channel.send(embed=embed, view=GiveawayView())
 
         async with data_lock:
-            data = load_data()
+            data = _store.load()
             data[str(message.id)] = giveaway_data
-            save_data(data)
+            _store.save(data)
 
-        self.bot.loop.create_task(self.schedule_end(str(message.id)))
-        self.bot.loop.create_task(self.update_loop(str(message.id)))
+        asyncio.create_task(self.schedule_end(str(message.id)))
+        asyncio.create_task(self.update_loop(str(message.id)))
 
         await interaction.response.send_message("✅ Розыгрыш создан!", ephemeral=True)
 
@@ -393,7 +370,7 @@ class Giveaway(commands.Cog):
             return
 
         async with data_lock:
-            data = load_data()
+            data = _store.load()
             giveaway = data.get(message_id)
 
             if not giveaway:
@@ -405,7 +382,7 @@ class Giveaway(commands.Cog):
                 return
 
             giveaway["participants"].remove(user.id)
-            save_data(data)
+            _store.save(data)
 
         channel = self.bot.get_channel(giveaway["channel_id"])
 
