@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 import logging
+import time
 import base64
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -20,6 +21,7 @@ from music_core import (
 from edit_guard import safe_message_edit, start_cleanup_task
 from json_store import JsonStore
 from runtime_paths import data_path
+from web_admin import maybe_start_web_admin
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,9 @@ YOUTUBE_HOSTS = {
 
 _music_update_task: asyncio.Task | None = None
 _idle_disconnect_tasks: dict[int, asyncio.Task] = {}
+_last_state_dump: dict[int, float] = {}
+STATE_DUMP_INTERVAL_SECONDS = int(os.getenv("PLAYER_STATE_DUMP_INTERVAL", "15"))
+_web_admin_runner = None
 
 # Store for player resumes
 state_store = JsonStore(data_path("player_state.json"))
@@ -194,8 +199,16 @@ async def music_controls_updater():
                 if not player or not getattr(player, "current_track", None):
                     continue
 
-                # Auto-resume state dumping
-                dump_player_state(player, state_store)
+                # Auto-resume state dumping (throttled to reduce disk I/O)
+                try:
+                    guild_id = getattr(getattr(player, "guild", None), "id", None)
+                    now = time.time()
+                    last = _last_state_dump.get(guild_id or 0, 0.0)
+                    if guild_id and (now - last) >= STATE_DUMP_INTERVAL_SECONDS:
+                        dump_player_state(player, state_store)
+                        _last_state_dump[guild_id] = now
+                except Exception:
+                    logger.exception("Failed to dump player state")
 
                 if not getattr(player, "control_message", None):
                     continue
@@ -265,6 +278,13 @@ async def setup_hook():
     if _music_update_task is None or _music_update_task.done():
         _music_update_task = asyncio.create_task(music_controls_updater())
 
+    global _web_admin_runner
+    if _web_admin_runner is None:
+        try:
+            _web_admin_runner = await maybe_start_web_admin(bot)
+        except Exception:
+            logger.exception("Failed to start web admin")
+
 bot.setup_hook = setup_hook
 
 # ================= NODE EVENTS =================
@@ -302,7 +322,7 @@ async def on_wavelink_node_ready(payload):
                     pos = pd.get("position", 0)
                     if pos > 0:
                         await player.seek(pos)
-                        player.track_start_time = asyncio.get_event_loop().time() - (pos / 1000)
+                        player.track_start_time = time.time() - (pos / 1000)
 
             # Restore queue
             for q_encoded in pd.get("queue_encoded", []):

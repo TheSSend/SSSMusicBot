@@ -139,3 +139,23 @@ For youtube-source plugin based playback, use `lavalink.server.sources.youtube: 
 - Do not commit runtime JSON/DB files or logs
 - Do not commit `lavalink/Lavalink.jar` or downloaded plugins
 - Rotate your Discord token before publishing if it has ever been exposed
+
+## Web Admin Panel (optional)
+
+The bot can start a small protected web panel for viewing logs/config and reloading modules.
+
+Enable in `.env`:
+
+- `WEB_ADMIN_ENABLED=1`
+- `WEB_ADMIN_HOST=0.0.0.0` (bind to all interfaces for remote access)
+- `WEB_ADMIN_PORT=8080`
+- `WEB_ADMIN_TOKEN=...` (required)
+
+Open in browser:
+
+- `http://<server-ip>:8080/?token=<WEB_ADMIN_TOKEN>`
+
+Security notes:
+
+- Use a strong token and keep it private.
+- Prefer running behind a reverse proxy with HTTPS if exposing to the internet.

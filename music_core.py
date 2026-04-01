@@ -11,6 +11,23 @@ from edit_guard import safe_message_edit
 
 logger = logging.getLogger(__name__)
 
+def _user_in_same_voice_channel(interaction: discord.Interaction, player: "MusicPlayer") -> bool:
+    user = getattr(interaction, "user", None)
+    voice = getattr(user, "voice", None)
+    if not voice or not getattr(voice, "channel", None):
+        return False
+    return getattr(voice.channel, "id", None) == getattr(getattr(player, "channel", None), "id", None)
+
+
+async def _require_same_voice_channel(interaction: discord.Interaction, player: "MusicPlayer") -> bool:
+    if _user_in_same_voice_channel(interaction, player):
+        return True
+    try:
+        await interaction.followup.send("❌ Ты должен быть в том же голосовом канале, что и бот.", ephemeral=True)
+    except Exception:
+        pass
+    return False
+
 def display_author(value: str | None) -> str:
     if not value:
         return "Неизвестный исполнитель"
@@ -199,6 +216,8 @@ class FiltersSelect(discord.ui.Select):
         await interaction.response.defer()
         if not self.player:
             return
+        if not await _require_same_voice_channel(interaction, self.player):
+            return
 
         choice = self.values[0]
         filters = wavelink.Filters()
@@ -243,6 +262,8 @@ class MusicControls(discord.ui.View):
     async def pause(self, interaction: discord.Interaction, _):
         if not self.player: return
         await interaction.response.defer()
+        if not await _require_same_voice_channel(interaction, self.player):
+            return
 
         try:
             await self.player.pause(not self.player.paused)
@@ -263,6 +284,8 @@ class MusicControls(discord.ui.View):
     async def skip(self, interaction: discord.Interaction, _):
         await interaction.response.defer()
         if self.player:
+            if not await _require_same_voice_channel(interaction, self.player):
+                return
             if self.player.queue.is_empty:
                 await interaction.followup.send("📭 Очередь пуста", ephemeral=True)
                 return
@@ -273,6 +296,8 @@ class MusicControls(discord.ui.View):
     @discord.ui.button(label="Очередь", emoji="📜", style=discord.ButtonStyle.success, row=1)
     async def queue(self, interaction: discord.Interaction, _):
         await interaction.response.defer(ephemeral=True)
+        if not self.player or not await _require_same_voice_channel(interaction, self.player):
+            return
         if self.player.queue.is_empty:
             await interaction.followup.send("📭 Очередь пуста", ephemeral=True)
             return
@@ -293,16 +318,20 @@ class MusicControls(discord.ui.View):
             await interaction.followup.send("❌ Нет играющего трека.", ephemeral=True)
             return
 
+        if not await _require_same_voice_channel(interaction, self.player):
+            return
+
         track_title = self.player.current_track.title
         author = self.player.current_track.author
         
         normalized = track_title.replace(" - Topic", "").replace(" - Official Music Video", "")
         # Using some-random-api as a stable fallback for lyrics
-        api_url = f"https://some-random-api.com/lyrics?title={normalized} {author}"
+        api_url = "https://some-random-api.com/lyrics"
         
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(api_url) as resp:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(api_url, params={"title": f"{normalized} {author}".strip()}) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         lyrics_text = data.get("lyrics", "")
@@ -324,6 +353,8 @@ class MusicControls(discord.ui.View):
     async def stop(self, interaction: discord.Interaction, _):
         await interaction.response.defer()
         if self.player:
+            if not await _require_same_voice_channel(interaction, self.player):
+                return
             control_message = getattr(self.player, "control_message", None)
             if control_message is not None:
                 try: await control_message.delete()

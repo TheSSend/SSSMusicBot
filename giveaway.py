@@ -10,15 +10,21 @@ from edit_guard import safe_message_edit
 from runtime_paths import data_path
 from json_store import JsonStore
 from config import OWNER_ID, MOSCOW_TZ, DATE_FORMAT
+from web_config import get_web_config, get_int
 
 logger = logging.getLogger(__name__)
 data_lock = asyncio.Lock()
 
 # ================= CONFIG =================
 
-# Admin role from environment
-ADMIN_ROLE_ID_STR = os.getenv("GIVEAWAY_ADMIN_ROLE_ID")
-ADMIN_ROLE_ID = int(ADMIN_ROLE_ID_STR) if ADMIN_ROLE_ID_STR and ADMIN_ROLE_ID_STR.isdigit() else None
+def _get_admin_role_id() -> int | None:
+    cfg = get_web_config()
+    value = get_int(cfg, ["giveaway", "admin_role_id"])
+    if value:
+        return value
+
+    raw = os.getenv("GIVEAWAY_ADMIN_ROLE_ID")
+    return int(raw) if raw and raw.isdigit() else None
 
 _store = JsonStore(data_path("giveaways.json"))
 
@@ -171,9 +177,10 @@ class Giveaway(commands.Cog):
         asyncio.create_task(self.restore_giveaways())
 
     def has_admin_role(self, member):
-        if ADMIN_ROLE_ID is None:
+        admin_role_id = _get_admin_role_id()
+        if admin_role_id is None:
             return member.id == OWNER_ID
-        return ADMIN_ROLE_ID in [r.id for r in member.roles]
+        return admin_role_id in [r.id for r in member.roles]
 
     async def restore_giveaways(self):
         await self.bot.wait_until_ready()

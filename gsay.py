@@ -17,16 +17,25 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# Allowed roles with validation
-ALLOWED_ROLES_RAW = os.getenv("GSAY_ALLOWED_ROLES", "")
-ALLOWED_ROLE_IDS = []
-if ALLOWED_ROLES_RAW:
-    for r in ALLOWED_ROLES_RAW.split(","):
-        r_stripped = r.strip()
-        if r_stripped.isdigit():
-            ALLOWED_ROLE_IDS.append(int(r_stripped))
-        else:
-            logger.warning("Invalid role ID in GSAY_ALLOWED_ROLES: %s", r_stripped)
+from web_config import get_web_config, get_int_list
+
+
+def _get_allowed_role_ids() -> list[int]:
+    cfg = get_web_config()
+    ids = get_int_list(cfg, ["gsay", "allowed_roles"], default=None)
+    if ids is not None:
+        return ids
+
+    raw = os.getenv("GSAY_ALLOWED_ROLES", "")
+    out: list[int] = []
+    if raw:
+        for part in raw.split(","):
+            part = part.strip()
+            if part.isdigit():
+                out.append(int(part))
+            else:
+                logger.warning("Invalid role ID in GSAY_ALLOWED_ROLES: %s", part)
+    return out
 
 # ================= LOCATION CONFIG =================
 
@@ -69,7 +78,8 @@ class GSay(commands.Cog):
     def has_permission(self, member: discord.Member) -> bool:
         if member.id == OWNER_ID:
             return True
-        return any(r.id in ALLOWED_ROLE_IDS for r in member.roles)
+        allowed_role_ids = set(_get_allowed_role_ids())
+        return any(r.id in allowed_role_ids for r in member.roles)
 
     # ---------- Построение Embed ----------
     def build_embed(self, text, location, group_code, time, target_time, image):

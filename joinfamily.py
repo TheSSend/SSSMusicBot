@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from runtime_paths import data_path
 from json_store import JsonStore
 from config import OWNER_ID, MOSCOW_TZ, DATE_FORMAT
+from web_config import get_web_config, get_int, get_int_list
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -16,24 +17,48 @@ data_lock = asyncio.Lock()
 
 # ================= ENV =================
 
-HR_ACCESS = [
-    int(r.strip())
-    for r in os.getenv("HR_ACCESS", "").split(",")
-    if r.strip().isdigit()
-]
+def _get_hr_access() -> list[int]:
+    cfg = get_web_config()
+    ids = get_int_list(cfg, ["joinfamily", "hr_access"], default=None)
+    if ids is not None:
+        return ids
+    return [
+        int(r.strip())
+        for r in os.getenv("HR_ACCESS", "").split(",")
+        if r.strip().isdigit()
+    ]
 
 # ================= CALL CHANNELS =================
 
-CALL_CHANNELS = [
-    int(channel_id.strip())
-    for channel_id in os.getenv("FAMILY_CALL_CHANNELS", "").split(",")
-    if channel_id.strip().isdigit()
-]
+def _get_call_channels() -> list[int]:
+    cfg = get_web_config()
+    ids = get_int_list(cfg, ["joinfamily", "call_channels"], default=None)
+    if ids is not None:
+        return ids
+    return [
+        int(channel_id.strip())
+        for channel_id in os.getenv("FAMILY_CALL_CHANNELS", "").split(",")
+        if channel_id.strip().isdigit()
+    ]
 
-LOG_CHANNEL_ID = int(os.getenv("FAMILY_LOG_CHANNEL", "0"))
-REMOVE_ROLE_ID = int(os.getenv("FAMILY_REMOVE_ROLE_ID", "0"))
-ADD_ROLE_1_ID = int(os.getenv("FAMILY_ADD_ROLE_1_ID", "0"))
-ADD_ROLE_2_ID = int(os.getenv("FAMILY_ADD_ROLE_2_ID", "0"))
+def _get_log_channel_id() -> int:
+    cfg = get_web_config()
+    return get_int(cfg, ["joinfamily", "log_channel_id"], default=int(os.getenv("FAMILY_LOG_CHANNEL", "0"))) or 0
+
+
+def _get_remove_role_id() -> int:
+    cfg = get_web_config()
+    return get_int(cfg, ["joinfamily", "remove_role_id"], default=int(os.getenv("FAMILY_REMOVE_ROLE_ID", "0"))) or 0
+
+
+def _get_add_role_1_id() -> int:
+    cfg = get_web_config()
+    return get_int(cfg, ["joinfamily", "add_role_1_id"], default=int(os.getenv("FAMILY_ADD_ROLE_1_ID", "0"))) or 0
+
+
+def _get_add_role_2_id() -> int:
+    cfg = get_web_config()
+    return get_int(cfg, ["joinfamily", "add_role_2_id"], default=int(os.getenv("FAMILY_ADD_ROLE_2_ID", "0"))) or 0
 
 # ================= FILE =================
 
@@ -48,7 +73,7 @@ def has_hr_access(member: discord.Member):
     if member.id == OWNER_ID:
         return True
 
-    allowed_ids = set(HR_ACCESS)
+    allowed_ids = set(_get_hr_access())
     if member.id in allowed_ids:
         return True
 
@@ -137,7 +162,7 @@ class JoinFamilyModal(discord.ui.Modal):
                 interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True)
             }
 
-            for role_id in HR_ACCESS:
+            for role_id in _get_hr_access():
                 role = interaction.guild.get_role(role_id)
                 if role:
                     overwrites[role] = discord.PermissionOverwrite(
@@ -189,8 +214,9 @@ class JoinFamilyModal(discord.ui.Modal):
                 elif old.get("status") == "отклонена":
                     emoji = "🔴"
 
-                if old.get("log_message_id") and LOG_CHANNEL_ID:
-                    link = f"https://discord.com/channels/{interaction.guild.id}/{LOG_CHANNEL_ID}/{old['log_message_id']}"
+                log_channel_id = _get_log_channel_id()
+                if old.get("log_message_id") and log_channel_id:
+                    link = f"https://discord.com/channels/{interaction.guild.id}/{log_channel_id}/{old['log_message_id']}"
                     links.append(f"{emoji} [Заявка от {old['created_at']}]({link})")
 
                 elif old.get("channel_id"):
@@ -231,7 +257,7 @@ class JoinFamilyModal(discord.ui.Modal):
 
         # УВЕДОМЛЕНИЕ HR
         hr_mentions = []
-        for role_id in HR_ACCESS:
+        for role_id in _get_hr_access():
             role = interaction.guild.get_role(role_id)
             if role:
                 hr_mentions.append(role.mention)
@@ -243,8 +269,9 @@ class JoinFamilyModal(discord.ui.Modal):
         await channel.send(mention_text)
 
         # ЛОГ СОЗДАНИЯ
-        if LOG_CHANNEL_ID:
-            log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
+        log_channel_id = _get_log_channel_id()
+        if log_channel_id:
+            log_channel = interaction.guild.get_channel(log_channel_id)
             if log_channel:
                 log_message = await log_channel.send(embed=embed)
                 application["log_message_id"] = log_message.id
@@ -320,8 +347,9 @@ class ApplicationManageView(discord.ui.View):
 
         await interaction.message.edit(view=self)
 
-        if LOG_CHANNEL_ID and application:
-            log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
+        log_channel_id = _get_log_channel_id()
+        if log_channel_id and application:
+            log_channel = interaction.guild.get_channel(log_channel_id)
 
             if log_channel:
 
@@ -385,9 +413,13 @@ class ApplicationManageView(discord.ui.View):
 
         if member:
 
-            remove_role = guild.get_role(REMOVE_ROLE_ID) if REMOVE_ROLE_ID else None
-            add_role_1 = guild.get_role(ADD_ROLE_1_ID) if ADD_ROLE_1_ID else None
-            add_role_2 = guild.get_role(ADD_ROLE_2_ID) if ADD_ROLE_2_ID else None
+            remove_role_id = _get_remove_role_id()
+            add_role_1_id = _get_add_role_1_id()
+            add_role_2_id = _get_add_role_2_id()
+
+            remove_role = guild.get_role(remove_role_id) if remove_role_id else None
+            add_role_1 = guild.get_role(add_role_1_id) if add_role_1_id else None
+            add_role_2 = guild.get_role(add_role_2_id) if add_role_2_id else None
 
             try:
 

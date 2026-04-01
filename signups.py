@@ -20,12 +20,23 @@ data_lock = asyncio.Lock()
 
 _store = JsonStore(data_path("signups.json"))
 
-SIGNUP_MANAGERS = [
-    int(x.strip()) for x in os.getenv("SIGNUP_MANAGERS", "").split(",") if x.strip().isdigit()
-]
-SIGNUP_ADMINS = [
-    int(x.strip()) for x in os.getenv("SIGNUP_ADMINS", "").split(",") if x.strip().isdigit()
-]
+from web_config import get_web_config, get_int_list
+
+
+def _get_signup_managers() -> list[int]:
+    cfg = get_web_config()
+    ids = get_int_list(cfg, ["signups", "managers"], default=None)
+    if ids is not None:
+        return ids
+    return [int(x.strip()) for x in os.getenv("SIGNUP_MANAGERS", "").split(",") if x.strip().isdigit()]
+
+
+def _get_signup_admins() -> list[int]:
+    cfg = get_web_config()
+    ids = get_int_list(cfg, ["signups", "admins"], default=None)
+    if ids is not None:
+        return ids
+    return [int(x.strip()) for x in os.getenv("SIGNUP_ADMINS", "").split(",") if x.strip().isdigit()]
 
 # Import OWNER_ID from shared config
 from config import OWNER_ID
@@ -263,7 +274,7 @@ class Signups(commands.Cog):
     def has_permission(self, member: discord.Member) -> bool:
         if member.id == OWNER_ID:
             return True
-        allowed_ids = set(SIGNUP_MANAGERS) | set(SIGNUP_ADMINS)
+        allowed_ids = set(_get_signup_managers()) | set(_get_signup_admins())
         if member.id in allowed_ids:
             return True
         return any(role.id in allowed_ids for role in member.roles)
