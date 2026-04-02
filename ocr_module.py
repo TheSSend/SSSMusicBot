@@ -54,11 +54,12 @@ OCR_PHRASE_CORRECTIONS = {
 
 OCR_SUFFIX_NOISE_PATTERNS = (
     r"^\s*\d+[\.\)]\s*",
-    r"\|\s*(премьера|reaction|реакция|разбор|обзор|official|audio|video|lyrics|lyric video|text|текст|shorts|тизер|preview|snippet|clip|remix|cover|live)\b.*$",
+    r"\|\s*(премьера|reaction|реакция|разбор|обзор|official|audio|video|music video|lyrics|lyric video|visualizer|text|текст|shorts|тизер|preview|snippet|clip|remix|cover|live|mix|radio edit|dfm mix)\b.*$",
     r"\|\s*\d{4}\b.*$",
-    r"\(\s*(official audio|official video|official music video|lyrics|lyric video|премьера|реакция|разбор|обзор|preview|snippet|clip|shorts)\s*.*\)$",
+    r"\(\s*(official audio|official video|official music video|lyrics|lyric video|visualizer|премьера|реакция|разбор|обзор|preview|snippet|clip|shorts|mix|radio edit|dfm mix)\s*.*\)$",
     r"\(\s*\d{2}\.\d{2}\.\d{4}\s*\)$",
     r"\(\s*\d{4}\s*\)$",
+    r"\s+\b(dfm mix|radio edit|official audio|official video|official music video|lyric video|visualizer|lyrics|topic|premiere|reaction|реакция|разбор|обзор|mix)\b\s*$",
 )
 
 logger = logging.getLogger(__name__)
@@ -653,7 +654,7 @@ def has_alt_version_marker(value: str) -> bool:
 def clean_title_extras(value: str) -> str:
 
     normalized = build_match_text(value)
-    normalized = re.sub(r"\b(remix|hardstyle|sped up|speed up|slowed|reverb|nightcore|mashup|edit|version|cover|live|official audio|official video|reaction|реакция|разбор|обзор|премьера|preview|snippet|clip|shorts)\b", " ", normalized)
+    normalized = re.sub(r"\b(remix|hardstyle|sped up|speed up|slowed|reverb|nightcore|mashup|edit|version|cover|live|official audio|official video|official music video|lyric video|visualizer|topic|reaction|реакция|разбор|обзор|премьера|preview|snippet|clip|shorts|mix|radio edit|dfm mix)\b", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized.strip()
 
@@ -739,6 +740,15 @@ def build_ocr_search_queries(title: str, artist: str) -> list[str]:
         raw_artist,
         f"{raw_artist} {raw_title}",
     ]
+
+    title_base = clean_title_extras(title_clean)
+    artist_base = clean_title_extras(artist_clean)
+    if title_base:
+        variants.extend([
+            title_base,
+            f"{title_base} {artist_base}".strip(),
+            f"{artist_base} {title_base}".strip(),
+        ])
 
     if " | " in raw_title:
         left_side = raw_title.split(" | ", 1)[0].strip()
