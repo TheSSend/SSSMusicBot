@@ -3,6 +3,7 @@ import difflib
 import logging
 import os
 import re
+import time
 import tempfile
 
 import discord
@@ -17,7 +18,8 @@ from music_core import MusicPlayer, start_track, send_control_message, send_temp
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
-OCR_TIMEOUT = 45
+OCR_TIMEOUT = 90
+OCR_INIT_TIMEOUT = 120
 SEARCH_TIMEOUT = 12
 MAX_OCR_TRACKS = 8
 MAX_SEARCH_CANDIDATES = 10
@@ -349,7 +351,7 @@ def _run_ocr(engine, path: str, binary_path: str | None = None) -> list[str]:
     for item in _iter_paddle_results(result):
         lines.extend(_extract_lines_from_paddle_result(item))
 
-    if binary_path is None:
+    if binary_path is None or len(lines) >= 3:
         return lines
 
     binary_result = engine.predict(binary_path)
@@ -382,10 +384,13 @@ async def run_ocr(path: str) -> list[str]:
     binary_path = None
 
     try:
+        started_at = time.monotonic()
         prepared_path = await asyncio.to_thread(_prepare_ocr_image, path)
         binary_path = await asyncio.to_thread(_prepare_ocr_binary_image, path)
         engine = await get_ocr_engine()
-        return await asyncio.to_thread(_run_ocr, engine, prepared_path, binary_path)
+        lines = await asyncio.to_thread(_run_ocr, engine, prepared_path, binary_path)
+        logger.info("OCR finished in %.2fs and returned %s lines", time.monotonic() - started_at, len(lines))
+        return lines
     finally:
         for temp_path in (prepared_path, binary_path):
             if temp_path and os.path.exists(temp_path):
@@ -872,3 +877,8 @@ class OCRMusic(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(OCRMusic(bot))
+    try:
+        await asyncio.wait_for(get_ocr_engine(), timeout=OCR_INIT_TIMEOUT)
+        logger.info("OCR engine warmed up successfully")
+    except Exception:
+        logger.exception("OCR engine warmup failed")
