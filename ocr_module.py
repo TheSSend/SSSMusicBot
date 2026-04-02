@@ -345,11 +345,17 @@ def merge_ocr_lines(primary: list[str], secondary: list[str]) -> list[str]:
     return merged
 
 
+def log_ocr_lines(stage: str, lines: list[str]) -> None:
+    preview = " | ".join(lines[:20]) if lines else "<empty>"
+    logger.info("OCR stage=%s count=%s preview=%s", stage, len(lines), preview)
+
+
 def _run_ocr(engine, path: str, binary_path: str | None = None) -> list[str]:
     result = engine.predict(path)
     lines = []
     for item in _iter_paddle_results(result):
         lines.extend(_extract_lines_from_paddle_result(item))
+    log_ocr_lines("primary", lines)
 
     if binary_path is None or len(lines) >= 3:
         return lines
@@ -358,7 +364,10 @@ def _run_ocr(engine, path: str, binary_path: str | None = None) -> list[str]:
     binary_lines = []
     for item in _iter_paddle_results(binary_result):
         binary_lines.extend(_extract_lines_from_paddle_result(item))
-    return merge_ocr_lines(lines, binary_lines)
+    log_ocr_lines("binary", binary_lines)
+    merged = merge_ocr_lines(lines, binary_lines)
+    log_ocr_lines("merged", merged)
+    return merged
 
 
 async def get_ocr_engine():
@@ -448,6 +457,7 @@ def extract_tracks(lines):
             parts = re.split(pattern, line, maxsplit=1)
             if len(parts) == 2 and parts[0].strip() and parts[1].strip():
                 split_candidate = (parts[0].strip(), parts[1].strip())
+                logger.info("OCR split candidate: title=%s artist=%s", split_candidate[0], split_candidate[1])
                 break
 
         if split_candidate:
@@ -456,12 +466,16 @@ def extract_tracks(lines):
     for i in range(0, len(cleaned) - 1, 2):
         title = cleaned[i]
         artist = cleaned[i + 1]
+        logger.info("OCR paired candidate: title=%s artist=%s", title, artist)
         add_track_candidate(title, artist)
 
     if not tracks:
+        logger.info("OCR tracks not built from pairs, falling back to single-line candidates")
         for line in cleaned:
+            logger.info("OCR single-line candidate: %s", line)
             add_track_candidate(line, "")
 
+    logger.info("OCR track candidates count=%s", len(tracks))
     return tracks[:MAX_OCR_TRACKS]
 
 
@@ -793,6 +807,7 @@ class OCRMusic(commands.Cog):
                 path = tmp.name
 
             text_lines = await asyncio.wait_for(run_ocr(path), timeout=OCR_TIMEOUT)
+            logger.info("OCR returned %s raw lines for attachment=%s", len(text_lines), getattr(image, "filename", None))
         except asyncio.TimeoutError:
             await interaction.followup.send(
                 "❌ OCR занял слишком много времени",
@@ -820,6 +835,7 @@ class OCRMusic(commands.Cog):
                     logger.warning("Не удалось удалить временный OCR файл: %s", exc)
 
         tracks = extract_tracks(text_lines)
+        logger.info("OCR extracted %s track pairs", len(tracks))
 
         if not tracks:
             await interaction.followup.send(
