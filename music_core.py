@@ -227,7 +227,7 @@ def dump_player_state(player: MusicPlayer, store):
         guild_id_str = str(player.guild.id)
         state = store.load()
 
-        queue_encoded = [t.encoded for t in player.queue]
+        queue_data = [getattr(t, "raw_data", None) or {"encoded": t.encoded} for t in player.queue]
 
         # Handle position calculation
         pos = getattr(player, "position", 0)  # sometimes provided by wavelink player object
@@ -239,9 +239,11 @@ def dump_player_state(player: MusicPlayer, store):
             "channel_id": getattr(player.channel, "id", 0),
             "text_channel_id": getattr(player.control_message.channel, "id", 0) if player.control_message else 0,
             "control_message_id": getattr(player.control_message, "id", 0) if player.control_message else 0,
+            "track_data": getattr(player.current_track, "raw_data", None) or {"encoded": player.current_track.encoded},
             "track_encoded": player.current_track.encoded,
             "position": pos,
-            "queue_encoded": queue_encoded,
+            "queue_data": queue_data,
+            "queue_encoded": [t.encoded for t in player.queue],
             "filters": {} # Future proofing for saving filters
         }
         

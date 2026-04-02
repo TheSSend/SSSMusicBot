@@ -68,11 +68,23 @@ async def resume_saved_players() -> None:
                 else:
                     player = await voice_channel.connect(cls=MusicPlayer)
 
+                current_data = pd.get("track_data")
                 current_encoded = pd.get("track_encoded")
-                if current_encoded:
+
+                track = None
+                if isinstance(current_data, dict) and current_data.get("info") and current_data.get("encoded"):
+                    try:
+                        track = wavelink.Playable(current_data)
+                    except Exception:
+                        logger.exception("Failed to reconstruct track payload for guild %s", guild_id_str)
+
+                if track is None and current_encoded:
                     tracks = await wavelink.Playable.search(current_encoded)
                     if tracks:
                         track = tracks[0] if isinstance(tracks, list) else tracks
+
+                if track is not None:
+                    try:
                         player.current_track = track
                         player.track_start_time = time.time()
                         await player.play(track)
@@ -80,12 +92,33 @@ async def resume_saved_players() -> None:
                         if pos > 0:
                             await player.seek(pos)
                             player.track_start_time = time.time() - (pos / 1000)
+                    except Exception:
+                        logger.exception("Failed to restore current track for guild %s", guild_id_str)
+                        to_delete.append(guild_id_str)
+                        continue
 
-                for q_encoded in pd.get("queue_encoded", []):
-                    q_tracks = await wavelink.Playable.search(q_encoded)
-                    if q_tracks:
-                        q_track = q_tracks[0] if isinstance(q_tracks, list) else q_tracks
-                        player.queue.put(q_track)
+                queue_data = pd.get("queue_data")
+                if isinstance(queue_data, list) and queue_data:
+                    for q_data in queue_data:
+                        try:
+                            if isinstance(q_data, dict):
+                                player.queue.put(wavelink.Playable(q_data))
+                            else:
+                                q_tracks = await wavelink.Playable.search(str(q_data))
+                                if q_tracks:
+                                    q_track = q_tracks[0] if isinstance(q_tracks, list) else q_tracks
+                                    player.queue.put(q_track)
+                        except Exception:
+                            logger.exception("Failed to restore queued track for guild %s", guild_id_str)
+                else:
+                    for q_encoded in pd.get("queue_encoded", []):
+                        try:
+                            q_tracks = await wavelink.Playable.search(q_encoded)
+                            if q_tracks:
+                                q_track = q_tracks[0] if isinstance(q_tracks, list) else q_tracks
+                                player.queue.put(q_track)
+                        except Exception:
+                            logger.exception("Failed to restore queued encoded track for guild %s", guild_id_str)
 
                 await restore_control_message(guild, player, pd)
                 await update_presence(player)
@@ -434,6 +467,7 @@ async def on_track_end(payload: wavelink.TrackEndEventPayload):
         cancel_idle_disconnect(player)
         next_track = await player.queue.get_wait()
         await start_track(player, next_track, False)
+        dump_player_state(player, state_store)
         await update_presence(player)
         return
 
@@ -578,10 +612,12 @@ async def play_music(interaction: discord.Interaction, query: str):
 
             await start_track(player, first_track, False)
             await update_presence(player)
+            dump_player_state(player, state_store)
 
             if is_playlist:
                 for t in tracks[1:]:
                     await player.queue.put_wait(t)
+                dump_player_state(player, state_store)
                 await send_temporary_followup(
                     interaction,
                     content=f"🎵 Сейчас играет: **{first_track.title}**\n📥 Добавлен плейлист: **{playlist_name}** ({len(tracks)} треков)",
@@ -599,6 +635,7 @@ async def play_music(interaction: discord.Interaction, query: str):
             if is_playlist:
                 for t in tracks:
                     await player.queue.put_wait(t)
+                dump_player_state(player, state_store)
                 await send_temporary_followup(
                     interaction,
                     content=f"📥 Плейлист добавлен в очередь: **{playlist_name}** ({len(tracks)} треков)",
@@ -606,6 +643,7 @@ async def play_music(interaction: discord.Interaction, query: str):
                 )
             else:
                 await player.queue.put_wait(first_track)
+                dump_player_state(player, state_store)
                 await send_temporary_followup(
                     interaction,
                     content=f"🎵 Добавлено в очередь: **{first_track.title}**",
