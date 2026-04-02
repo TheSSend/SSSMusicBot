@@ -7,6 +7,7 @@ import logging
 import time
 import base64
 import signal
+import warnings
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
@@ -229,6 +230,16 @@ logging.basicConfig(
     handlers=handlers,
     force=True,
 )
+
+warnings.filterwarnings("ignore", message="No ccache found.*")
+warnings.filterwarnings("ignore", message=".*Connectivity check to the model hoster has been skipped.*")
+warnings.filterwarnings("ignore", message=".*davey is not installed, voice will NOT be supported.*")
+
+logging.getLogger("discord.client").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("paddle").setLevel(logging.ERROR)
+logging.getLogger("paddlex").setLevel(logging.ERROR)
+logging.getLogger("paddleocr").setLevel(logging.ERROR)
 
 logger.info("BOT STARTED")
 logger.info(f"Python version: {sys.version}")

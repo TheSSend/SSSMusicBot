@@ -65,5 +65,7 @@ async def safe_message_edit(message, **kwargs) -> None:
         try:
             await message.edit(**kwargs)
             _last_channel_edit[channel_id] = time.time()
+        except discord.NotFound:
+            return
         except Exception:
             logger.exception("Failed to edit message in channel %s", channel_id)
