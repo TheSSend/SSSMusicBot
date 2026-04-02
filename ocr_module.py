@@ -350,6 +350,129 @@ def strip_ocr_noise(value: str) -> str:
     return normalized
 
 
+def _tokenize_track_text(value: str) -> list[str]:
+    normalized = build_match_text(value)
+    return [token for token in normalized.split() if token]
+
+
+def _artist_like_score(value: str) -> float:
+    tokens = _tokenize_track_text(value)
+    if not tokens:
+        return 0.0
+
+    score = 0.0
+    raw = str(value)
+    if "," in raw:
+        score += 2.0
+    if "&" in raw or "/" in raw:
+        score += 1.2
+    if "+" in raw:
+        score += 0.6
+    if any(ch.isdigit() for ch in raw):
+        score += 0.5
+    if len(tokens) <= 6:
+        score += 0.8
+    if len(tokens) >= 2 and sum(1 for token in tokens if token[:1].isupper()) >= 1:
+        score += 0.6
+    if len(tokens) >= 2 and all(len(token) <= 12 for token in tokens):
+        score += 0.4
+    return score
+
+
+def _title_like_score(value: str) -> float:
+    tokens = _tokenize_track_text(value)
+    if not tokens:
+        return 0.0
+
+    score = 0.0
+    raw = str(value)
+    if len(tokens) <= 6:
+        score += 1.0
+    if len(tokens) <= 4:
+        score += 0.6
+    if any(ch in raw for ch in ("«", "»", '"', "“", "”")):
+        score += 0.6
+    if any(ch.islower() for ch in raw):
+        score += 0.5
+    if "," not in raw and "&" not in raw:
+        score += 0.4
+    return score
+
+
+def _split_inline_track(line: str) -> tuple[str, str] | None:
+    tokens = line.split()
+    if len(tokens) < 2:
+        return None
+
+    best_split = None
+    best_score = 0.0
+
+    for index in range(1, len(tokens)):
+        left = " ".join(tokens[:index]).strip()
+        right = " ".join(tokens[index:]).strip()
+        if not left or not right:
+            continue
+
+        left_artist = _artist_like_score(left)
+        right_title = _title_like_score(right)
+        left_title = _title_like_score(left)
+        right_artist = _artist_like_score(right)
+
+        score_artist_title = left_artist + right_title - left_title * 0.5 - right_artist * 0.5
+        score_title_artist = left_title + right_artist - left_artist * 0.5 - right_title * 0.5
+
+        if score_artist_title > best_score:
+            best_score = score_artist_title
+            best_split = (right, left)
+        if score_title_artist > best_score:
+            best_score = score_title_artist
+            best_split = (left, right)
+
+    if best_split and best_score >= 1.4:
+        return best_split
+    return None
+
+
+def _parse_explicit_track_line(line: str) -> tuple[str, str] | None:
+    separator_patterns = (
+        r"\s+-\s+",
+        r"\s+—\s+",
+        r"\s+–\s+",
+        r"\s+\|\s+",
+        r"\s+:\s+",
+    )
+
+    best_candidate = None
+    best_score = 0.0
+
+    for pattern in separator_patterns:
+        parts = re.split(pattern, line, maxsplit=1)
+        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+            continue
+
+        left_part = strip_ocr_noise(parts[0])
+        right_part = strip_ocr_noise(parts[1])
+        if not left_part or not right_part:
+            continue
+
+        candidates = (
+            (right_part, left_part),
+            (left_part, right_part),
+        )
+
+        for title, artist in candidates:
+            score = _title_like_score(title) + _artist_like_score(artist)
+            score -= _artist_like_score(title) * 0.8
+            score -= _title_like_score(artist) * 0.8
+            if score > best_score:
+                best_score = score
+                best_candidate = (title, artist)
+
+    if best_candidate and best_score >= 1.3:
+        return best_candidate
+    return None
+
+
 def line_quality_score(value: str) -> int:
 
     cyr = sum(1 for ch in value if "а" <= ch.lower() <= "я" or ch.lower() == "ё")
@@ -475,13 +598,6 @@ def extract_tracks(lines):
     logger.info("========== END OCR ==========")
 
     tracks = []
-    separator_patterns = (
-        r"\s+-\s+",
-        r"\s+—\s+",
-        r"\s+–\s+",
-        r"\s+\|\s+",
-        r"\s+:\s+",
-    )
 
     def add_track_candidate(title: str, artist: str = "") -> None:
         title = title.strip()
@@ -494,33 +610,49 @@ def extract_tracks(lines):
         if candidate not in tracks:
             tracks.append(candidate)
 
-    for line in cleaned:
-        split_candidate = None
-        for pattern in separator_patterns:
-            parts = re.split(pattern, line, maxsplit=1)
-            if len(parts) == 2 and parts[0].strip() and parts[1].strip():
-                left_part = strip_ocr_noise(parts[0])
-                right_part = strip_ocr_noise(parts[1])
+    index = 0
+    while index < len(cleaned):
+        line = cleaned[index]
 
-                if right_part and left_part:
-                    split_candidate = (right_part, left_part)
-                    logger.warning("OCR_DIAG split_candidate title=%s artist=%s", split_candidate[0], split_candidate[1])
-                break
+        explicit_candidate = _parse_explicit_track_line(line)
+        if explicit_candidate:
+            logger.warning(
+                "OCR_DIAG split_candidate title=%s artist=%s",
+                explicit_candidate[0],
+                explicit_candidate[1],
+            )
+            add_track_candidate(*explicit_candidate)
+            index += 1
+            continue
 
-        if split_candidate:
-            add_track_candidate(*split_candidate)
+        inline_candidate = _split_inline_track(line)
+        if inline_candidate:
+            logger.warning(
+                "OCR_DIAG inline_candidate title=%s artist=%s",
+                inline_candidate[0],
+                inline_candidate[1],
+            )
+            add_track_candidate(*inline_candidate)
+            index += 1
+            continue
 
-    for i in range(0, len(cleaned) - 1, 2):
-        title = cleaned[i]
-        artist = cleaned[i + 1]
-        logger.warning("OCR_DIAG paired_candidate title=%s artist=%s", title, artist)
-        add_track_candidate(title, artist)
+        next_line = cleaned[index + 1] if index + 1 < len(cleaned) else ""
+        if next_line:
+            current_title_score = _title_like_score(line)
+            next_artist_score = _artist_like_score(next_line)
+            next_title_score = _title_like_score(next_line)
 
-    if not tracks:
-        logger.warning("OCR_DIAG fallback_single_lines=1")
-        for line in cleaned:
+            if current_title_score >= 1.0 and next_artist_score >= 1.1 and next_artist_score > next_title_score:
+                logger.warning("OCR_DIAG paired_candidate title=%s artist=%s", line, next_line)
+                add_track_candidate(line, next_line)
+                index += 2
+                continue
+
+        if _title_like_score(line) >= 0.9:
             logger.warning("OCR_DIAG single_line_candidate=%s", line)
             add_track_candidate(line, "")
+
+        index += 1
 
     logger.warning("OCR_DIAG track_candidates=%s", len(tracks))
     return tracks[:MAX_OCR_TRACKS]
