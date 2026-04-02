@@ -69,21 +69,39 @@ ocr_engine = None
 ocr_engine_lock = asyncio.Lock()
 
 
-def _build_ocr_engine():
-    from paddleocr import PaddleOCR
+@contextlib.contextmanager
+def _mute_ocr_startup_noise():
+    logger_names = ("paddle", "paddlex", "paddleocr", "httpx")
+    previous_disable_level = logging.root.manager.disable
+    previous_levels = {name: logging.getLogger(name).level for name in logger_names}
 
-    with open(os.devnull, "w", encoding="utf-8") as devnull:
-        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-            return PaddleOCR(
-                device="cpu",
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-                enable_hpi=False,
-                enable_mkldnn=False,
-                text_detection_model_name="PP-OCRv5_mobile_det",
-                text_recognition_model_name="eslav_PP-OCRv5_mobile_rec",
-            )
+    try:
+        logging.disable(logging.CRITICAL)
+        for name in logger_names:
+            logging.getLogger(name).setLevel(logging.CRITICAL + 1)
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+                yield
+    finally:
+        logging.disable(previous_disable_level)
+        for name, level in previous_levels.items():
+            logging.getLogger(name).setLevel(level)
+
+
+def _build_ocr_engine():
+    with _mute_ocr_startup_noise():
+        from paddleocr import PaddleOCR
+
+        return PaddleOCR(
+            device="cpu",
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            enable_hpi=False,
+            enable_mkldnn=False,
+            text_detection_model_name="PP-OCRv5_mobile_det",
+            text_recognition_model_name="eslav_PP-OCRv5_mobile_rec",
+        )
 
 
 def _prepare_ocr_image(source_path: str) -> str:
