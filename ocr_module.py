@@ -52,6 +52,11 @@ OCR_PHRASE_CORRECTIONS = {
     "ahtohhe6okrause": "Антон Небо, Krause",
 }
 
+OCR_SUFFIX_NOISE_PATTERNS = (
+    r"\|\s*(премьера|reaction|реакция|разбор|обзор|official|audio|video|lyrics|lyric video|text|текст|shorts|тизер|preview|snippet|clip|remix|cover|live)\b.*$",
+    r"\|\s*\d{4}\b.*$",
+)
+
 logger = logging.getLogger(__name__)
 
 ocr_engine = None
@@ -321,6 +326,24 @@ def _extract_lines_from_ocr_result(result) -> list[str]:
     return lines
 
 
+def strip_ocr_noise(value: str) -> str:
+    normalized = " ".join(str(value).split()).strip()
+    if not normalized:
+        return ""
+
+    for pattern in OCR_SUFFIX_NOISE_PATTERNS:
+        normalized = re.sub(pattern, "", normalized, flags=re.IGNORECASE).strip()
+
+    normalized = re.sub(
+        r"\s*\|\s*$",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    return normalized
+
+
 def line_quality_score(value: str) -> int:
 
     cyr = sum(1 for ch in value if "а" <= ch.lower() <= "я" or ch.lower() == "ё")
@@ -428,6 +451,7 @@ def extract_tracks(lines):
 
     for line in lines:
         line = correct_ocr_phrase(line)
+        line = strip_ocr_noise(line)
         line = line.strip()
         line = re.sub(r'[|•…"“”]', '', line)
         line = re.sub(r';', '', line)
@@ -494,6 +518,7 @@ def extract_tracks(lines):
 
 def normalize_ocr_text(value: str) -> str:
 
+    value = strip_ocr_noise(value)
     value = value.replace("_", " ")
     value = value.replace(",", " ")
     value = value.replace("/", " ")
@@ -619,7 +644,7 @@ def has_alt_version_marker(value: str) -> bool:
 def clean_title_extras(value: str) -> str:
 
     normalized = build_match_text(value)
-    normalized = re.sub(r"\b(remix|hardstyle|sped up|speed up|slowed|reverb|nightcore|mashup|edit|version|cover|live|official audio|official video)\b", " ", normalized)
+    normalized = re.sub(r"\b(remix|hardstyle|sped up|speed up|slowed|reverb|nightcore|mashup|edit|version|cover|live|official audio|official video|reaction|реакция|разбор|обзор|премьера|preview|snippet|clip|shorts)\b", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized.strip()
 
@@ -705,6 +730,15 @@ def build_ocr_search_queries(title: str, artist: str) -> list[str]:
         raw_artist,
         f"{raw_artist} {raw_title}",
     ]
+
+    if " | " in raw_title:
+        left_side = raw_title.split(" | ", 1)[0].strip()
+        if left_side:
+            variants.extend([
+                left_side,
+                normalize_ocr_text(left_side),
+                replace_confusable_latin_with_cyrillic(left_side),
+            ])
 
     for title_guess in title_guesses:
         variants.append(title_guess)
