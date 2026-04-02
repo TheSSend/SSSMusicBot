@@ -6,5 +6,5 @@ python-dotenv>=0.19
 uvloop>=0.19; platform_system != "Windows"
 yt-dlp>=2025.0.0
 lyricsgenius>=3.0.1
-paddleocr>=3.0.2
-paddlepaddle>=3.0.0
+paddleocr==3.3.3
+paddlepaddle==3.2.0

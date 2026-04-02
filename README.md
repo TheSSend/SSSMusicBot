@@ -137,15 +137,21 @@ Recommended Ubuntu install:
 
 ```bash
 source .venv/bin/activate
-python -m pip uninstall -y rapidocr-onnxruntime
-python -m pip install -U paddlepaddle paddleocr
+python -m pip uninstall -y rapidocr-onnxruntime paddleocr paddlepaddle
+python -m pip install -U paddlepaddle==3.2.0 paddleocr==3.3.3
 ```
 
 If you want a clean reinstall:
 
 ```bash
 python -m pip uninstall -y paddleocr paddlepaddle rapidocr-onnxruntime
-python -m pip install -U paddlepaddle paddleocr
+python -m pip install -U paddlepaddle==3.2.0 paddleocr==3.3.3
+```
+
+If pip cannot find a compatible `paddlepaddle` wheel, use the official CPU index:
+
+```bash
+python -m pip install -U --index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/ paddlepaddle==3.2.0 paddleocr==3.3.3
 ```
 
 ## Notes For GitHub

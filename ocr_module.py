@@ -14,6 +14,8 @@ from discord.ext import commands
 
 from music_core import MusicPlayer, start_track, send_control_message, send_temporary_followup, display_author
 
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+
 MAX_FILE_SIZE = 10 * 1024 * 1024
 OCR_TIMEOUT = 45
 SEARCH_TIMEOUT = 12
@@ -58,9 +60,12 @@ def _build_ocr_engine():
     from paddleocr import PaddleOCR
 
     return PaddleOCR(
+        device="cpu",
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,
+        enable_hpi=False,
+        enable_mkldnn=False,
         text_detection_model_name="PP-OCRv5_mobile_det",
         text_recognition_model_name="eslav_PP-OCRv5_mobile_rec",
     )
@@ -727,6 +732,13 @@ class OCRMusic(commands.Cog):
             )
             return
         except Exception as exc:
+            error_text = str(exc)
+            if "ConvertPirAttribute2RuntimeAttribute" in error_text:
+                await interaction.followup.send(
+                    "❌ OCR сломан из-за несовместимых версий Paddle. Переустанови `paddlepaddle==3.2.0` и `paddleocr==3.3.3`, затем перезапусти бота.",
+                    ephemeral=True,
+                )
+                return
             await interaction.followup.send(
                 f"❌ Ошибка OCR: {exc}",
                 ephemeral=True,
