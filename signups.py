@@ -268,8 +268,20 @@ class Signups(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        self._tasks: set[asyncio.Task] = set()
         self.bot.add_view(SignupView(bot))
-        asyncio.create_task(self.restore_signups())
+        self._track_task(self.restore_signups())
+
+    def _track_task(self, coro):
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    def cog_unload(self):
+        for task in list(self._tasks):
+            task.cancel()
+        self._tasks.clear()
 
     def has_permission(self, member: discord.Member) -> bool:
         if member.id == OWNER_ID:
@@ -316,7 +328,7 @@ class Signups(commands.Cog):
                 continue
 
             if not sign.get("closed"):
-                asyncio.create_task(self.schedule_end(msg_id))
+                self._track_task(self.schedule_end(msg_id))
 
         if changed:
             _store.save(data)
@@ -480,7 +492,7 @@ class Signups(commands.Cog):
                 except Exception:
                     logger.exception("Не удалось удалить временный tag signup")
 
-            asyncio.create_task(delete_tag())
+            self._track_task(delete_tag())
 
         signup = {
             "title": title,
@@ -510,7 +522,7 @@ class Signups(commands.Cog):
             data[str(message.id)] = signup
             _store.save(data)
 
-        asyncio.create_task(self.schedule_end(str(message.id)))
+        self._track_task(self.schedule_end(str(message.id)))
 
         await interaction.followup.send("✅ Список создан.", ephemeral=True)
 

@@ -73,6 +73,18 @@ class GSay(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._tasks: set[asyncio.Task] = set()
+
+    def _track_task(self, coro):
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    def cog_unload(self):
+        for task in list(self._tasks):
+            task.cancel()
+        self._tasks.clear()
 
     # ---------- Проверка доступа ----------
     def has_permission(self, member: discord.Member) -> bool:
@@ -267,7 +279,7 @@ class GSay(commands.Cog):
         await send_new()
 
         # запускаем updater
-        asyncio.create_task(updater())
+        self._track_task(updater())
 
         # ---------- Повторы ----------
         if total_messages > 1:

@@ -461,8 +461,20 @@ class JoinFamily(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        self._tasks: set[asyncio.Task] = set()
         self.bot.add_view(JoinFamilyView(bot))
-        asyncio.create_task(self.restore_active_applications())
+        self._track_task(self.restore_active_applications())
+
+    def _track_task(self, coro):
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    def cog_unload(self):
+        for task in list(self._tasks):
+            task.cancel()
+        self._tasks.clear()
 
     async def restore_active_applications(self):
         await self.bot.wait_until_ready()

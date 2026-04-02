@@ -173,8 +173,21 @@ class Giveaway(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        self._tasks: set[asyncio.Task] = set()
         self.bot.add_view(GiveawayView())
-        asyncio.create_task(self.restore_giveaways())
+
+        self._track_task(self.restore_giveaways())
+
+    def _track_task(self, coro):
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    def cog_unload(self):
+        for task in list(self._tasks):
+            task.cancel()
+        self._tasks.clear()
 
     def has_admin_role(self, member):
         admin_role_id = _get_admin_role_id()
@@ -190,8 +203,8 @@ class Giveaway(commands.Cog):
             if giveaway.get("ended"):
                 continue
 
-            asyncio.create_task(self.schedule_end(message_id))
-            asyncio.create_task(self.update_loop(message_id))
+            self._track_task(self.schedule_end(message_id))
+            self._track_task(self.update_loop(message_id))
 
     # ================= SAFE UPDATE LOOP =================
 
@@ -360,8 +373,8 @@ class Giveaway(commands.Cog):
             data[str(message.id)] = giveaway_data
             _store.save(data)
 
-        asyncio.create_task(self.schedule_end(str(message.id)))
-        asyncio.create_task(self.update_loop(str(message.id)))
+        self._track_task(self.schedule_end(str(message.id)))
+        self._track_task(self.update_loop(str(message.id)))
 
         await interaction.response.send_message("✅ Розыгрыш создан!", ephemeral=True)
 

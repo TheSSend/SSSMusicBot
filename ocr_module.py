@@ -74,15 +74,29 @@ def _mute_ocr_startup_noise():
     logger_names = ("paddle", "paddlex", "paddleocr", "httpx")
     previous_disable_level = logging.root.manager.disable
     previous_levels = {name: logging.getLogger(name).level for name in logger_names}
+    stdout_fd = None
+    stderr_fd = None
+    devnull_fd = None
 
     try:
         logging.disable(logging.CRITICAL)
         for name in logger_names:
             logging.getLogger(name).setLevel(logging.CRITICAL + 1)
-        with open(os.devnull, "w", encoding="utf-8") as devnull:
-            with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
-                yield
+        stdout_fd = os.dup(1)
+        stderr_fd = os.dup(2)
+        devnull_fd = os.open(os.devnull, os.O_RDWR)
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
     finally:
+        if stdout_fd is not None:
+            os.dup2(stdout_fd, 1)
+        if stderr_fd is not None:
+            os.dup2(stderr_fd, 2)
+        for fd in (stdout_fd, stderr_fd, devnull_fd):
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
         logging.disable(previous_disable_level)
         for name, level in previous_levels.items():
             logging.getLogger(name).setLevel(level)

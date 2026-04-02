@@ -351,7 +351,12 @@ async def maybe_start_web_admin(bot: discord.Client) -> web.AppRunner | None:
         return None
 
     host = os.getenv("WEB_ADMIN_HOST", "127.0.0.1")
-    port = int(os.getenv("WEB_ADMIN_PORT", "8080"))
+    port_raw = os.getenv("WEB_ADMIN_PORT", "8080").strip()
+    try:
+        port = int(port_raw)
+    except ValueError:
+        logger.warning("Invalid WEB_ADMIN_PORT=%s, falling back to 8080", port_raw)
+        port = 8080
 
     store = JsonStore(data_path("web_config.json"))
 
