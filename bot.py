@@ -73,6 +73,8 @@ async def resume_saved_players() -> None:
                     tracks = await wavelink.Playable.search(current_encoded)
                     if tracks:
                         track = tracks[0] if isinstance(tracks, list) else tracks
+                        player.current_track = track
+                        player.track_start_time = time.time()
                         await player.play(track)
                         pos = pd.get("position", 0)
                         if pos > 0:
@@ -86,6 +88,7 @@ async def resume_saved_players() -> None:
                         player.queue.put(q_track)
 
                 await restore_control_message(guild, player, pd)
+                await update_presence(player)
                 logger.info("Auto-resumed player guild=%s", guild_id_str)
             except Exception:
                 logger.exception("Failed to auto-resume player for guild %s", guild_id_str)
