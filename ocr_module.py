@@ -502,7 +502,7 @@ def extract_tracks(lines):
                 right_part = strip_ocr_noise(parts[1])
 
                 if right_part and left_part:
-                    split_candidate = (left_part, right_part)
+                    split_candidate = (right_part, left_part)
                     logger.warning("OCR_DIAG split_candidate title=%s artist=%s", split_candidate[0], split_candidate[1])
                 break
 
