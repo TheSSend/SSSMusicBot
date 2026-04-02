@@ -168,6 +168,7 @@ class MusicPlayer(wavelink.Player):
         super().__init__(*args, **kwargs)
         self.queue = wavelink.Queue()
         self.control_message: discord.Message | None = None
+        self.control_view: discord.ui.View | None = None
         self.current_track: wavelink.Playable | None = None
         self.track_start_time: float | None = None
 
@@ -357,7 +358,7 @@ class FiltersSelect(discord.ui.Select):
                  await safe_message_edit(
                     self.player.control_message,
                     embed=build_embed(self.player),
-                    view=MusicControls(self.player),
+                    view=get_music_controls(self.player),
                 )
         except Exception:
              logger.exception("Failed to apply Audio Filters")
@@ -372,6 +373,7 @@ class MusicControls(discord.ui.View):
         
         # Add the Select Menu directly to the view
         self.add_item(FiltersSelect(player))
+
 
     @discord.ui.button(label="Пауза", emoji="⏸️", style=discord.ButtonStyle.secondary, row=1, custom_id="music_pause")
     async def pause(self, interaction: discord.Interaction, _):
@@ -393,7 +395,7 @@ class MusicControls(discord.ui.View):
                     await safe_message_edit(
                         self.player.control_message,
                         embed=build_embed(self.player),
-                        view=MusicControls(self.player),
+                        view=get_music_controls(self.player),
                     )
                 except Exception:
                     logger.exception("Failed to refresh control message after pause")
@@ -621,6 +623,15 @@ class MusicControls(discord.ui.View):
 
 # ================= START TRACK =================
 
+def get_music_controls(player: MusicPlayer) -> MusicControls:
+    view = getattr(player, "control_view", None)
+    if isinstance(view, MusicControls):
+        return view
+    view = MusicControls(player)
+    player.control_view = view
+    return view
+
+
 async def start_track(player: MusicPlayer, track, auto: bool):
     player.current_track = track
     player.track_start_time = time.time()
@@ -641,7 +652,7 @@ async def start_track(player: MusicPlayer, track, auto: bool):
         await safe_message_edit(
             player.control_message,
             embed=build_embed(player),
-            view=MusicControls(player)
+            view=get_music_controls(player)
         )
 
 # ================= CONTROL MESSAGE =================
@@ -652,7 +663,7 @@ async def send_control_message(interaction: discord.Interaction, player: MusicPl
         description="Загрузка...",
         color=0x57F287,
     )
-    view = MusicControls(player)
+    view = get_music_controls(player)
     message = await interaction.followup.send(
         embed=embed,
         view=view

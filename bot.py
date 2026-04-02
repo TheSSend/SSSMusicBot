@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from music_core import (
     MusicPlayer, start_track, send_control_message, build_embed,
     build_queue_preview, MusicControls, display_author, send_temporary_followup,
+    get_music_controls,
     dump_player_state
 )
 from edit_guard import safe_message_edit, start_cleanup_task
@@ -56,7 +57,7 @@ async def restore_control_message(guild: discord.Guild, player: MusicPlayer, pd:
     if control_message_id:
         try:
             message = await text_channel.fetch_message(control_message_id)
-            view = MusicControls(player)
+            view = get_music_controls(player)
             bot.add_view(view, message_id=message.id)
             await safe_message_edit(
                 message,
@@ -72,7 +73,7 @@ async def restore_control_message(guild: discord.Guild, player: MusicPlayer, pd:
             logger.exception("Failed to fetch existing control message guild=%s message=%s", guild.id, control_message_id)
 
     try:
-        view = MusicControls(player)
+        view = get_music_controls(player)
         message = await text_channel.send(
             embed=build_embed(player),
             view=view,
@@ -269,7 +270,7 @@ async def music_controls_updater():
                     await safe_message_edit(
                         player.control_message,
                         embed=build_embed(player),
-                        view=MusicControls(player),
+                        view=get_music_controls(player),
                     )
                 except Exception:
                     logger.exception("Не удалось обновить контролы музыки для guild=%s", getattr(player.guild, "id", None))
