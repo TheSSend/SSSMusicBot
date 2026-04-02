@@ -192,19 +192,32 @@ def _extract_lines_from_paddle_result(item) -> list[str]:
         except Exception:
             continue
 
-        points = []
-        for point in box:
+        box_values = _coerce_sequence(box)
+        xs = []
+        ys = []
+
+        if len(box_values) >= 4 and all(not isinstance(value, (list, tuple, dict)) for value in box_values[:4]):
             try:
-                x, y = float(point[0]), float(point[1])
-            except Exception:
+                x1, y1, x2, y2 = (float(box_values[0]), float(box_values[1]), float(box_values[2]), float(box_values[3]))
+            except (TypeError, ValueError):
                 continue
-            points.append((x, y))
+            xs = [x1, x2]
+            ys = [y1, y2]
+        else:
+            points = []
+            for point in box_values:
+                try:
+                    x, y = float(point[0]), float(point[1])
+                except Exception:
+                    continue
+                points.append((x, y))
 
-        if not points:
-            continue
+            if not points:
+                continue
 
-        xs = [point[0] for point in points]
-        ys = [point[1] for point in points]
+            xs = [point[0] for point in points]
+            ys = [point[1] for point in points]
+
         parts.append(
             {
                 "text": text,
