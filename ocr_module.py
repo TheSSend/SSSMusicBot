@@ -53,8 +53,12 @@ OCR_PHRASE_CORRECTIONS = {
 }
 
 OCR_SUFFIX_NOISE_PATTERNS = (
+    r"^\s*\d+[\.\)]\s*",
     r"\|\s*(премьера|reaction|реакция|разбор|обзор|official|audio|video|lyrics|lyric video|text|текст|shorts|тизер|preview|snippet|clip|remix|cover|live)\b.*$",
     r"\|\s*\d{4}\b.*$",
+    r"\(\s*(official audio|official video|official music video|lyrics|lyric video|премьера|реакция|разбор|обзор|preview|snippet|clip|shorts)\s*.*\)$",
+    r"\(\s*\d{2}\.\d{2}\.\d{4}\s*\)$",
+    r"\(\s*\d{4}\s*\)$",
 )
 
 logger = logging.getLogger(__name__)
@@ -334,6 +338,7 @@ def strip_ocr_noise(value: str) -> str:
     for pattern in OCR_SUFFIX_NOISE_PATTERNS:
         normalized = re.sub(pattern, "", normalized, flags=re.IGNORECASE).strip()
 
+    normalized = normalized.strip("«»\"'“”‘’")
     normalized = re.sub(
         r"\s*\|\s*$",
         "",
@@ -493,8 +498,12 @@ def extract_tracks(lines):
         for pattern in separator_patterns:
             parts = re.split(pattern, line, maxsplit=1)
             if len(parts) == 2 and parts[0].strip() and parts[1].strip():
-                split_candidate = (parts[0].strip(), parts[1].strip())
-                logger.warning("OCR_DIAG split_candidate title=%s artist=%s", split_candidate[0], split_candidate[1])
+                left_part = strip_ocr_noise(parts[0])
+                right_part = strip_ocr_noise(parts[1])
+
+                if right_part and left_part:
+                    split_candidate = (left_part, right_part)
+                    logger.warning("OCR_DIAG split_candidate title=%s artist=%s", split_candidate[0], split_candidate[1])
                 break
 
         if split_candidate:
@@ -708,8 +717,8 @@ def score_track_match(track, title: str, artist: str) -> float:
 
 def build_ocr_search_queries(title: str, artist: str) -> list[str]:
 
-    raw_title = title.strip()
-    raw_artist = artist.strip()
+    raw_title = strip_ocr_noise(title).strip()
+    raw_artist = strip_ocr_noise(artist).strip()
     title_clean = normalize_ocr_text(raw_title)
     artist_clean = normalize_ocr_text(raw_artist)
     title_cyr = replace_confusable_latin_with_cyrillic(title_clean)
