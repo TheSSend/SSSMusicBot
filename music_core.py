@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 import logging
+import re
 import aiohttp
 
 from wavelink import LavalinkException
