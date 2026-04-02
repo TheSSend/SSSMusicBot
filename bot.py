@@ -40,6 +40,7 @@ _last_state_dump: dict[int, float] = {}
 STATE_DUMP_INTERVAL_SECONDS = int(os.getenv("PLAYER_STATE_DUMP_INTERVAL", "15"))
 _web_admin_runner = None
 _resume_lock = asyncio.Lock()
+_resume_task: asyncio.Task | None = None
 
 # Store for player resumes
 state_store = JsonStore(data_path("player_state.json"))
@@ -94,6 +95,12 @@ async def resume_saved_players() -> None:
             for gd in to_delete:
                 state.pop(gd, None)
             state_store.save(state)
+
+
+async def resume_saved_players_when_ready() -> None:
+    await bot.wait_until_ready()
+    await asyncio.sleep(2)
+    await resume_saved_players()
 
 
 async def restore_control_message(guild: discord.Guild, player: MusicPlayer, pd: dict) -> None:
@@ -375,8 +382,6 @@ async def setup_hook():
         logger.info("Lavalink подключен")
     except Exception as e:
         logger.error("Lavalink ошибка: %s", e)
-    else:
-        asyncio.create_task(resume_saved_players())
 
     start_cleanup_task()
 
@@ -391,6 +396,10 @@ async def setup_hook():
         except Exception:
             logger.exception("Failed to start web admin")
 
+    global _resume_task
+    if _resume_task is None or _resume_task.done():
+        _resume_task = asyncio.create_task(resume_saved_players_when_ready())
+
 bot.setup_hook = setup_hook
 
 # ================= NODE EVENTS =================
@@ -399,7 +408,6 @@ bot.setup_hook = setup_hook
 async def on_wavelink_node_ready(payload):
     logger.info("Lavalink node ready: %s", payload.node.identifier)
     await update_presence()
-    await resume_saved_players()
 
 @bot.event
 async def on_wavelink_node_disconnected(payload):
