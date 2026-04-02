@@ -111,6 +111,26 @@ def _iter_paddle_results(result):
         return [result]
 
 
+def _coerce_sequence(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    try:
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+            if isinstance(value, list):
+                return value
+    except Exception:
+        pass
+    try:
+        return list(value)
+    except TypeError:
+        return [value]
+
+
 def _unwrap_paddle_result(item):
     payload = getattr(item, "res", None)
     if payload is None:
@@ -130,22 +150,16 @@ def _extract_lines_from_paddle_result(item) -> list[str]:
     rec_texts = payload.get("rec_texts")
     if rec_texts is None:
         rec_text = payload.get("rec_text")
-        if rec_text is None:
-            rec_texts = []
-        elif isinstance(rec_text, (list, tuple)):
-            rec_texts = list(rec_text)
-        else:
-            rec_texts = [rec_text]
+        rec_texts = _coerce_sequence(rec_text)
+    else:
+        rec_texts = _coerce_sequence(rec_texts)
 
     rec_scores = payload.get("rec_scores")
     if rec_scores is None:
         rec_score = payload.get("rec_score")
-        if rec_score is None:
-            rec_scores = []
-        elif isinstance(rec_score, (list, tuple)):
-            rec_scores = list(rec_score)
-        else:
-            rec_scores = [rec_score]
+        rec_scores = _coerce_sequence(rec_score)
+    else:
+        rec_scores = _coerce_sequence(rec_scores)
 
     rec_boxes = payload.get("rec_boxes")
     if rec_boxes is None:
@@ -154,6 +168,8 @@ def _extract_lines_from_paddle_result(item) -> list[str]:
         rec_boxes = payload.get("dt_polys")
     if rec_boxes is None:
         rec_boxes = []
+    else:
+        rec_boxes = _coerce_sequence(rec_boxes)
 
     parts = []
     for index, text in enumerate(rec_texts):
