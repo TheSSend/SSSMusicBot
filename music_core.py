@@ -60,6 +60,77 @@ def display_requester(value) -> str:
     name = getattr(value, "display_name", None) or getattr(value, "name", None) or str(value)
     return " ".join(str(name).split()).strip() or "Неизвестно"
 
+def normalize_lyrics_query(value: str | None) -> str:
+    if not value:
+        return ""
+
+    normalized = " ".join(str(value).split()).strip()
+    if not normalized:
+        return ""
+
+    noise_patterns = (
+        r"\s*-\s*Topic$",
+        r"\s*-\s*Official Video$",
+        r"\s*-\s*Official Music Video$",
+        r"\s*-\s*Official Audio$",
+        r"\s*-\s*Lyrics$",
+        r"\s*-\s*Lyric Video$",
+        r"\s*\(Official Video\)$",
+        r"\s*\(Official Music Video\)$",
+        r"\s*\(Official Audio\)$",
+        r"\s*\(Lyrics\)$",
+        r"\s*\(Lyric Video\)$",
+        r"\s*\(Topic\)$",
+    )
+
+    changed = True
+    while changed:
+        changed = False
+        before = normalized
+        for pattern in noise_patterns:
+            normalized = re.sub(pattern, "", normalized, flags=re.IGNORECASE).strip()
+        normalized = re.sub(r"\s+(?:\||/|-)\s*(?:topic|official audio|official video|official music video|lyrics|lyric video)$", "", normalized, flags=re.IGNORECASE).strip()
+        normalized = re.sub(r"^provided to youtube by\s+", "", normalized, flags=re.IGNORECASE).strip()
+        normalized = re.sub(r"^topic\s+", "", normalized, flags=re.IGNORECASE).strip()
+        changed = normalized != before
+
+    return normalized
+
+
+def build_lyrics_search_variants(track_title: str, track_author: str) -> list[tuple[str, str]]:
+    title = normalize_lyrics_query(track_title)
+    author = normalize_lyrics_query(track_author)
+
+    variants: list[tuple[str, str]] = []
+
+    def add_variant(title_value: str, author_value: str) -> None:
+        normalized_title = normalize_lyrics_query(title_value)
+        normalized_author = normalize_lyrics_query(author_value)
+        if not normalized_title:
+            return
+        candidate = (normalized_title, normalized_author)
+        if candidate not in variants:
+            variants.append(candidate)
+
+    add_variant(title, author)
+
+    if " - " in title and not author:
+        left, right = [part.strip() for part in title.split(" - ", 1)]
+        if left and right:
+            add_variant(right, left)
+            add_variant(left, right)
+
+    if title.lower().endswith(" topic"):
+        add_variant(title[:-6].strip(), author)
+
+    if author.lower().endswith(" topic"):
+        add_variant(title, author[:-6].strip())
+
+    if not author:
+        add_variant(title, "")
+
+    return variants
+
 LYRICS_CACHE_TTL_SECONDS = int(os.getenv("LYRICS_CACHE_TTL_SECONDS", "21600"))
 _lyrics_cache: dict[str, tuple[float, str, str]] = {}
 
@@ -370,15 +441,9 @@ class MusicControls(discord.ui.View):
         track_title = self.player.current_track.title
         author = self.player.current_track.author
 
-        clean_title = " ".join(str(track_title).split()).strip()
-        clean_author = " ".join(str(author).split()).strip()
-        for suffix in (" - Topic", " (Official Video)", " (Official Music Video)", " (Lyrics)", " Lyrics"):
-            if clean_title.endswith(suffix):
-                clean_title = clean_title[: -len(suffix)].strip()
-        if " - " in clean_title:
-            left, right = [part.strip() for part in clean_title.split(" - ", 1)]
-            if left and right:
-                clean_title, clean_author = right, left
+        clean_title = normalize_lyrics_query(track_title)
+        clean_author = normalize_lyrics_query(author)
+        lyric_variants = build_lyrics_search_variants(track_title, author)
 
         cached_lyrics = _lyrics_cache_get(self.player.current_track)
         if cached_lyrics is not None:
@@ -402,15 +467,11 @@ class MusicControls(discord.ui.View):
                     timeout=10,
                     verbose=False,
                     remove_section_headers=True,
-                    skip_non_songs=True,
-                    excluded_terms=["(Remix)", "(Live)", "(Acoustic)"],
-                )
+                skip_non_songs=True,
+                excluded_terms=["(Remix)", "(Live)", "(Acoustic)"],
+            )
 
-                for title_value, artist_value in (
-                    (clean_title, clean_author),
-                    (track_title, clean_author),
-                    (clean_title, author),
-                ):
+                for title_value, artist_value in lyric_variants:
                     if not title_value:
                         continue
 
@@ -443,11 +504,7 @@ class MusicControls(discord.ui.View):
         timeout = aiohttp.ClientTimeout(total=12)
         try:
             async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-                for title_value, artist_value in (
-                    (clean_title, clean_author),
-                    (track_title, clean_author),
-                    (clean_title, author),
-                ):
+                for title_value, artist_value in lyric_variants:
                     if not title_value or not artist_value:
                         continue
 
@@ -504,7 +561,7 @@ class MusicControls(discord.ui.View):
         except Exception:
             logger.exception("Failed to fetch lyrics from fallback services")
 
-        normalized = track_title.replace(" - Topic", "").replace(" - Official Music Video", "")
+        normalized = clean_title or track_title
         # Using some-random-api as a stable fallback for lyrics
         api_url = "https://some-random-api.com/lyrics"
         
