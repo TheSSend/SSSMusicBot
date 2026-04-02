@@ -6,6 +6,7 @@ import sys
 import logging
 import time
 import base64
+import signal
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
@@ -41,9 +42,30 @@ STATE_DUMP_INTERVAL_SECONDS = int(os.getenv("PLAYER_STATE_DUMP_INTERVAL", "15"))
 _web_admin_runner = None
 _resume_lock = asyncio.Lock()
 _resume_task: asyncio.Task | None = None
+_shutting_down = False
 
 # Store for player resumes
 state_store = JsonStore(data_path("player_state.json"))
+
+
+def _clear_player_state(guild_id: int) -> None:
+    def _mutate(state: dict) -> dict:
+        state.pop(str(guild_id), None)
+        return state
+
+    state_store.update(_mutate)
+
+
+def _mark_shutting_down(*_args) -> None:
+    global _shutting_down
+    _shutting_down = True
+
+
+try:
+    signal.signal(signal.SIGTERM, _mark_shutting_down)
+    signal.signal(signal.SIGINT, _mark_shutting_down)
+except Exception:
+    logger.exception("Failed to register shutdown signal handlers")
 
 
 async def resume_saved_players() -> None:
@@ -128,9 +150,12 @@ async def resume_saved_players() -> None:
                 to_delete.append(guild_id_str)
 
         if to_delete:
-            for gd in to_delete:
-                state.pop(gd, None)
-            state_store.save(state)
+            def _mutate(current_state: dict) -> dict:
+                for gd in to_delete:
+                    current_state.pop(gd, None)
+                return current_state
+
+            state_store.update(_mutate)
 
 
 async def resume_saved_players_when_ready() -> None:
@@ -477,18 +502,37 @@ async def on_track_end(payload: wavelink.TrackEndEventPayload):
     player.current_track = None
     player.track_start_time = None
 
-    # Clear state when queue ends
-    state = state_store.load()
-    if str(player.guild.id) in state:
-        state.pop(str(player.guild.id), None)
-        state_store.save(state)
+    _clear_player_state(player.guild.id)
 
     await update_presence(None)
     schedule_idle_disconnect(player, delay=10)
 
 @bot.listen("on_wavelink_player_destroy")
 async def on_player_destroy(payload):
+    if _shutting_down:
+        return
+
+    player = getattr(payload, "player", None)
+    guild = getattr(player, "guild", None)
+    guild_id = getattr(guild, "id", None)
+    if guild_id:
+        _clear_player_state(guild_id)
     await update_presence(None)
+
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if _shutting_down:
+        return
+
+    bot_user = getattr(bot, "user", None)
+    if bot_user is None or getattr(member, "id", None) != bot_user.id:
+        return
+
+    if getattr(before, "channel", None) and getattr(after, "channel", None) is None:
+        guild_id = getattr(getattr(member, "guild", None), "id", None)
+        if guild_id:
+            _clear_player_state(guild_id)
 
 @bot.event
 async def on_music_stopped():

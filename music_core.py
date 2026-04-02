@@ -225,8 +225,6 @@ def dump_player_state(player: MusicPlayer, store):
             return
             
         guild_id_str = str(player.guild.id)
-        state = store.load()
-
         queue_data = [getattr(t, "raw_data", None) or {"encoded": t.encoded} for t in player.queue]
 
         # Handle position calculation
@@ -247,8 +245,11 @@ def dump_player_state(player: MusicPlayer, store):
             "filters": {} # Future proofing for saving filters
         }
         
-        state[guild_id_str] = pd
-        store.save(state)
+        def _mutate(state: dict) -> dict:
+            state[guild_id_str] = pd
+            return state
+
+        store.update(_mutate)
         
     except Exception:
         pass # ignore frequent dump errors
