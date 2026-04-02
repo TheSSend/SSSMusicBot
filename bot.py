@@ -39,9 +39,61 @@ _idle_disconnect_tasks: dict[int, asyncio.Task] = {}
 _last_state_dump: dict[int, float] = {}
 STATE_DUMP_INTERVAL_SECONDS = int(os.getenv("PLAYER_STATE_DUMP_INTERVAL", "15"))
 _web_admin_runner = None
+_resume_lock = asyncio.Lock()
 
 # Store for player resumes
 state_store = JsonStore(data_path("player_state.json"))
+
+
+async def resume_saved_players() -> None:
+    async with _resume_lock:
+        state = state_store.load()
+        to_delete: list[str] = []
+
+        for guild_id_str, pd in state.items():
+            guild = bot.get_guild(int(guild_id_str))
+            if not guild:
+                continue
+
+            voice_channel = guild.get_channel(pd.get("channel_id"))
+            if not voice_channel:
+                to_delete.append(guild_id_str)
+                continue
+
+            try:
+                existing_player = getattr(guild, "voice_client", None)
+                if isinstance(existing_player, MusicPlayer):
+                    player = existing_player
+                else:
+                    player = await voice_channel.connect(cls=MusicPlayer)
+
+                current_encoded = pd.get("track_encoded")
+                if current_encoded:
+                    tracks = await wavelink.Playable.search(current_encoded)
+                    if tracks:
+                        track = tracks[0] if isinstance(tracks, list) else tracks
+                        await player.play(track)
+                        pos = pd.get("position", 0)
+                        if pos > 0:
+                            await player.seek(pos)
+                            player.track_start_time = time.time() - (pos / 1000)
+
+                for q_encoded in pd.get("queue_encoded", []):
+                    q_tracks = await wavelink.Playable.search(q_encoded)
+                    if q_tracks:
+                        q_track = q_tracks[0] if isinstance(q_tracks, list) else q_tracks
+                        player.queue.put(q_track)
+
+                await restore_control_message(guild, player, pd)
+                logger.info("Auto-resumed player guild=%s", guild_id_str)
+            except Exception:
+                logger.exception("Failed to auto-resume player for guild %s", guild_id_str)
+                to_delete.append(guild_id_str)
+
+        if to_delete:
+            for gd in to_delete:
+                state.pop(gd, None)
+            state_store.save(state)
 
 
 async def restore_control_message(guild: discord.Guild, player: MusicPlayer, pd: dict) -> None:
@@ -58,7 +110,6 @@ async def restore_control_message(guild: discord.Guild, player: MusicPlayer, pd:
         try:
             message = await text_channel.fetch_message(control_message_id)
             view = get_music_controls(player)
-            bot.add_view(view, message_id=message.id)
             await safe_message_edit(
                 message,
                 embed=build_embed(player),
@@ -78,7 +129,6 @@ async def restore_control_message(guild: discord.Guild, player: MusicPlayer, pd:
             embed=build_embed(player),
             view=view,
         )
-        bot.add_view(view, message_id=message.id)
         player.control_message = message
         logger.info("Created new control message guild=%s channel=%s", guild.id, text_channel.id)
     except Exception:
@@ -283,6 +333,7 @@ async def music_controls_updater():
 
 async def setup_hook():
     logger.info("setup_hook: начало выполнения")
+    bot.add_view(MusicControls(None))
 
     for extension in (
         "giveaway",
@@ -324,6 +375,8 @@ async def setup_hook():
         logger.info("Lavalink подключен")
     except Exception as e:
         logger.error("Lavalink ошибка: %s", e)
+    else:
+        asyncio.create_task(resume_saved_players())
 
     start_cleanup_task()
 
@@ -346,56 +399,7 @@ bot.setup_hook = setup_hook
 async def on_wavelink_node_ready(payload):
     logger.info("Lavalink node ready: %s", payload.node.identifier)
     await update_presence()
-
-    # ---- Auto Resume Implementation ----
-    state = state_store.load()
-    to_delete = []
-
-    for guild_id_str, pd in state.items():
-        guild = bot.get_guild(int(guild_id_str))
-        if not guild:
-            continue
-            
-        voice_channel = guild.get_channel(pd.get("channel_id"))
-        if not voice_channel:
-            to_delete.append(guild_id_str)
-            continue
-
-        try:
-            player = await voice_channel.connect(cls=MusicPlayer)
-            
-            # Restore current track
-            current_encoded = pd.get("track_encoded")
-            if current_encoded:
-                tracks = await wavelink.Playable.search(current_encoded)
-                if tracks:
-                    track = tracks[0] if isinstance(tracks, list) else tracks
-                    await player.play(track)
-                    
-                    pos = pd.get("position", 0)
-                    if pos > 0:
-                        await player.seek(pos)
-                        player.track_start_time = time.time() - (pos / 1000)
-
-            # Restore queue
-            for q_encoded in pd.get("queue_encoded", []):
-                q_tracks = await wavelink.Playable.search(q_encoded)
-                if q_tracks:
-                    q_track = q_tracks[0] if isinstance(q_tracks, list) else q_tracks
-                    player.queue.put(q_track)
-
-            # Restore control message
-            await restore_control_message(guild, player, pd)
-
-        except Exception:
-            logger.exception("Failed to auto-resume player for guild %s", guild_id_str)
-            to_delete.append(guild_id_str)
-
-    # Cleanup invalid states
-    if to_delete:
-        for gd in to_delete:
-            state.pop(gd, None)
-        state_store.save(state)
+    await resume_saved_players()
 
 @bot.event
 async def on_wavelink_node_disconnected(payload):

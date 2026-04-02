@@ -318,7 +318,7 @@ def build_embed(player: MusicPlayer):
 # ================= FILTERS MENU =================
 
 class FiltersSelect(discord.ui.Select):
-    def __init__(self, player: MusicPlayer):
+    def __init__(self, player: MusicPlayer | None = None):
         self.player = player
         options = [
             discord.SelectOption(label="Обычный (Без Эффектов)", value="reset", emoji="🔄", description="Отключить все эффекты"),
@@ -330,9 +330,14 @@ class FiltersSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        if not self.player:
+        player = self.player
+        if player is None:
+            voice_client = getattr(getattr(interaction, "guild", None), "voice_client", None)
+            if isinstance(voice_client, MusicPlayer):
+                player = voice_client
+        if not player:
             return
-        if not await _require_same_voice_channel(interaction, self.player):
+        if not await _require_same_voice_channel(interaction, player):
             return
 
         choice = self.values[0]
@@ -352,13 +357,13 @@ class FiltersSelect(discord.ui.Select):
             filters.timescale.set(speed=0.8, pitch=0.8, rate=1.0)
         
         try:
-            await self.player.set_filters(filters)
+            await player.set_filters(filters)
             # Re-update the select text visually? Only if we wanted dynamic updating
-            if self.player.control_message:
+            if player.control_message:
                  await safe_message_edit(
-                    self.player.control_message,
-                    embed=build_embed(self.player),
-                    view=get_music_controls(self.player),
+                    player.control_message,
+                    embed=build_embed(player),
+                    view=get_music_controls(player),
                 )
         except Exception:
              logger.exception("Failed to apply Audio Filters")
@@ -367,7 +372,7 @@ class FiltersSelect(discord.ui.Select):
 # ================= CONTROLS =================
 
 class MusicControls(discord.ui.View):
-    def __init__(self, player: MusicPlayer):
+    def __init__(self, player: MusicPlayer | None = None):
         super().__init__(timeout=None)
         self.player = player
         
@@ -377,79 +382,90 @@ class MusicControls(discord.ui.View):
 
     @discord.ui.button(label="Пауза", emoji="⏸️", style=discord.ButtonStyle.secondary, row=1, custom_id="music_pause")
     async def pause(self, interaction: discord.Interaction, _):
-        if not self.player: return
+        player = self.player or getattr(getattr(interaction, "guild", None), "voice_client", None)
+        if not isinstance(player, MusicPlayer):
+            return
         await interaction.response.defer()
-        if not await _require_same_voice_channel(interaction, self.player):
+        if not await _require_same_voice_channel(interaction, player):
             return
 
         try:
-            await self.player.pause(not self.player.paused)
+            await player.pause(not player.paused)
         except LavalinkException:
             try:
-                await self.player.disconnect()
+                await player.disconnect()
             except Exception:
                 logger.exception("Failed to disconnect player after pause error")
         else:
-            if self.player.control_message:
+            if player.control_message:
                 try:
                     await safe_message_edit(
-                        self.player.control_message,
-                        embed=build_embed(self.player),
-                        view=get_music_controls(self.player),
+                        player.control_message,
+                        embed=build_embed(player),
+                        view=get_music_controls(player),
                     )
                 except Exception:
                     logger.exception("Failed to refresh control message after pause")
 
     @discord.ui.button(label="Следующий", emoji="⏭️", style=discord.ButtonStyle.primary, row=1, custom_id="music_skip")
     async def skip(self, interaction: discord.Interaction, _):
+        player = self.player or getattr(getattr(interaction, "guild", None), "voice_client", None)
+        if not isinstance(player, MusicPlayer):
+            return
         await interaction.response.defer()
-        if self.player:
-            if not await _require_same_voice_channel(interaction, self.player):
+        if player:
+            if not await _require_same_voice_channel(interaction, player):
                 return
-            if self.player.queue.is_empty:
+            if player.queue.is_empty:
                 await interaction.followup.send("📭 Очередь пуста", ephemeral=True)
                 return
             try:
-                await self.player.stop()
+                await player.stop()
             except Exception:
                 logger.exception("Failed to skip track")
 
     @discord.ui.button(label="Очередь", emoji="📜", style=discord.ButtonStyle.success, row=1, custom_id="music_queue")
     async def queue(self, interaction: discord.Interaction, _):
-        await interaction.response.defer(ephemeral=True)
-        if not self.player or not await _require_same_voice_channel(interaction, self.player):
+        player = self.player or getattr(getattr(interaction, "guild", None), "voice_client", None)
+        if not isinstance(player, MusicPlayer):
             return
-        if self.player.queue.is_empty:
+        await interaction.response.defer(ephemeral=True)
+        if not await _require_same_voice_channel(interaction, player):
+            return
+        if player.queue.is_empty:
             await interaction.followup.send("📭 Очередь пуста", ephemeral=True)
             return
         text = "\n".join(
             f"{i+1}. {t.title}"
-            for i, t in enumerate(list(self.player.queue)[:10])
+            for i, t in enumerate(list(player.queue)[:10])
         )
-        if len(self.player.queue) > 10:
-            text += f"\n...и еще {len(self.player.queue) - 10} треков"
+        if len(player.queue) > 10:
+            text += f"\n...и еще {len(player.queue) - 10} треков"
         await interaction.followup.send(text, ephemeral=True)
 
     @discord.ui.button(label="Текст", emoji="🎤", style=discord.ButtonStyle.secondary, row=2, custom_id="music_lyrics")
     async def lyrics(self, interaction: discord.Interaction, _):
         """Fetch lyrics from public API"""
+        player = self.player or getattr(getattr(interaction, "guild", None), "voice_client", None)
+        if not isinstance(player, MusicPlayer):
+            return
         await interaction.response.defer(ephemeral=True)
         
-        if not self.player or not self.player.current_track:
+        if not player.current_track:
             await interaction.followup.send("❌ Нет играющего трека.", ephemeral=True)
             return
 
-        if not await _require_same_voice_channel(interaction, self.player):
+        if not await _require_same_voice_channel(interaction, player):
             return
 
-        track_title = self.player.current_track.title
-        author = self.player.current_track.author
+        track_title = player.current_track.title
+        author = player.current_track.author
 
         clean_title = normalize_lyrics_query(track_title)
         clean_author = normalize_lyrics_query(author)
         lyric_variants = build_lyrics_search_variants(track_title, author)
 
-        cached_lyrics = _lyrics_cache_get(self.player.current_track)
+        cached_lyrics = _lyrics_cache_get(player.current_track)
         if cached_lyrics is not None:
             cached_source, cached_text = cached_lyrics
             embed = discord.Embed(
@@ -492,8 +508,8 @@ class MusicControls(discord.ui.View):
                             color=0x9B59B6,
                         )
                         embed.set_footer(text="Источник: Genius")
-                        _lyrics_cache_set(self.player.current_track, "Genius", lyrics_text)
-                        _lyrics_cache_set(self.player.current_track, "some-random-api", lyrics_text)
+                        _lyrics_cache_set(player.current_track, "Genius", lyrics_text)
+                        _lyrics_cache_set(player.current_track, "some-random-api", lyrics_text)
                         await interaction.followup.send(embed=embed, ephemeral=True)
                         return
             except ModuleNotFoundError:
@@ -516,10 +532,10 @@ class MusicControls(discord.ui.View):
                         "track_name": title_value,
                         "artist_name": artist_value,
                     }
-                    if getattr(self.player.current_track, "album", None):
-                        params["album_name"] = getattr(self.player.current_track, "album")
-                    if getattr(self.player.current_track, "length", None):
-                        params["duration"] = int(getattr(self.player.current_track, "length", 0) or 0) // 1000
+                    if getattr(player.current_track, "album", None):
+                        params["album_name"] = getattr(player.current_track, "album")
+                    if getattr(player.current_track, "length", None):
+                        params["duration"] = int(getattr(player.current_track, "length", 0) or 0) // 1000
 
                     for endpoint in ("https://lrclib.net/api/get", "https://lrclib.net/api/get_cached"):
                         try:
@@ -537,7 +553,7 @@ class MusicControls(discord.ui.View):
                                             color=0x9B59B6,
                                         )
                                         embed.set_footer(text="Источник: LRCLIB")
-                                        _lyrics_cache_set(self.player.current_track, "LRCLIB", lyrics_text)
+                                        _lyrics_cache_set(player.current_track, "LRCLIB", lyrics_text)
                                         await interaction.followup.send(embed=embed, ephemeral=True)
                                         return
                         except Exception:
@@ -557,7 +573,7 @@ class MusicControls(discord.ui.View):
                                         color=0x9B59B6,
                                     )
                                     embed.set_footer(text="Источник: lyrics.ovh")
-                                    _lyrics_cache_set(self.player.current_track, "lyrics.ovh", lyrics_text)
+                                    _lyrics_cache_set(player.current_track, "lyrics.ovh", lyrics_text)
                                     await interaction.followup.send(embed=embed, ephemeral=True)
                                     return
                     except Exception:
@@ -592,34 +608,40 @@ class MusicControls(discord.ui.View):
 
     @discord.ui.button(label="Стоп", emoji="⏹️", style=discord.ButtonStyle.danger, row=2, custom_id="music_stop")
     async def stop(self, interaction: discord.Interaction, _):
+        player = self.player or getattr(getattr(interaction, "guild", None), "voice_client", None)
+        if not isinstance(player, MusicPlayer):
+            return
         await interaction.response.defer()
-        if self.player:
-            if not await _require_same_voice_channel(interaction, self.player):
+        if player:
+            if not await _require_same_voice_channel(interaction, player):
                 return
-            control_message = getattr(self.player, "control_message", None)
+            control_message = getattr(player, "control_message", None)
             if control_message is not None:
                 try:
                     await control_message.delete()
                 except Exception:
                     logger.exception("Failed to delete control message on stop")
-                finally: self.player.control_message = None
+                finally: player.control_message = None
 
             try:
-                await self.player.disconnect()
+                await player.disconnect()
             except LavalinkException:
                 logger.exception("Lavalink refused disconnect on stop")
             
             try:
-                self.player.client.dispatch("music_stopped")
+                player.client.dispatch("music_stopped")
             except Exception:
                 logger.exception("Failed to dispatch music_stopped")
 
     @discord.ui.button(label="Инфо", emoji="ℹ️", style=discord.ButtonStyle.secondary, row=2, custom_id="music_info")
     async def info(self, interaction: discord.Interaction, _):
-        await interaction.response.defer(ephemeral=True)
-        if not self.player or not await _require_same_voice_channel(interaction, self.player):
+        player = self.player or getattr(getattr(interaction, "guild", None), "voice_client", None)
+        if not isinstance(player, MusicPlayer):
             return
-        await interaction.followup.send(embed=build_embed(self.player), ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        if not await _require_same_voice_channel(interaction, player):
+            return
+        await interaction.followup.send(embed=build_embed(player), ephemeral=True)
 
 # ================= START TRACK =================
 
@@ -668,7 +690,6 @@ async def send_control_message(interaction: discord.Interaction, player: MusicPl
         embed=embed,
         view=view
     )
-    interaction.client.add_view(view, message_id=message.id)
     player.control_message = message
 
 async def send_temporary_followup(
