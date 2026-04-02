@@ -56,10 +56,12 @@ async def restore_control_message(guild: discord.Guild, player: MusicPlayer, pd:
     if control_message_id:
         try:
             message = await text_channel.fetch_message(control_message_id)
+            view = MusicControls(player)
+            bot.add_view(view, message_id=message.id)
             await safe_message_edit(
                 message,
                 embed=build_embed(player),
-                view=MusicControls(player),
+                view=view,
             )
             player.control_message = message
             logger.info("Restored existing control message guild=%s message=%s", guild.id, control_message_id)
@@ -70,10 +72,12 @@ async def restore_control_message(guild: discord.Guild, player: MusicPlayer, pd:
             logger.exception("Failed to fetch existing control message guild=%s message=%s", guild.id, control_message_id)
 
     try:
+        view = MusicControls(player)
         message = await text_channel.send(
             embed=build_embed(player),
-            view=MusicControls(player),
+            view=view,
         )
+        bot.add_view(view, message_id=message.id)
         player.control_message = message
         logger.info("Created new control message guild=%s channel=%s", guild.id, text_channel.id)
     except Exception:

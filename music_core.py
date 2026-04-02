@@ -373,7 +373,7 @@ class MusicControls(discord.ui.View):
         # Add the Select Menu directly to the view
         self.add_item(FiltersSelect(player))
 
-    @discord.ui.button(label="Пауза", emoji="⏸️", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Пауза", emoji="⏸️", style=discord.ButtonStyle.secondary, row=1, custom_id="music_pause")
     async def pause(self, interaction: discord.Interaction, _):
         if not self.player: return
         await interaction.response.defer()
@@ -398,7 +398,7 @@ class MusicControls(discord.ui.View):
                 except Exception:
                     logger.exception("Failed to refresh control message after pause")
 
-    @discord.ui.button(label="Следующий", emoji="⏭️", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Следующий", emoji="⏭️", style=discord.ButtonStyle.primary, row=1, custom_id="music_skip")
     async def skip(self, interaction: discord.Interaction, _):
         await interaction.response.defer()
         if self.player:
@@ -412,7 +412,7 @@ class MusicControls(discord.ui.View):
             except Exception:
                 logger.exception("Failed to skip track")
 
-    @discord.ui.button(label="Очередь", emoji="📜", style=discord.ButtonStyle.success, row=1)
+    @discord.ui.button(label="Очередь", emoji="📜", style=discord.ButtonStyle.success, row=1, custom_id="music_queue")
     async def queue(self, interaction: discord.Interaction, _):
         await interaction.response.defer(ephemeral=True)
         if not self.player or not await _require_same_voice_channel(interaction, self.player):
@@ -428,7 +428,7 @@ class MusicControls(discord.ui.View):
             text += f"\n...и еще {len(self.player.queue) - 10} треков"
         await interaction.followup.send(text, ephemeral=True)
 
-    @discord.ui.button(label="Текст", emoji="🎤", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="Текст", emoji="🎤", style=discord.ButtonStyle.secondary, row=2, custom_id="music_lyrics")
     async def lyrics(self, interaction: discord.Interaction, _):
         """Fetch lyrics from public API"""
         await interaction.response.defer(ephemeral=True)
@@ -588,7 +588,7 @@ class MusicControls(discord.ui.View):
             await interaction.followup.send("❌ Возникла ошибка при поиске текста.", ephemeral=True)
 
 
-    @discord.ui.button(label="Стоп", emoji="⏹️", style=discord.ButtonStyle.danger, row=2)
+    @discord.ui.button(label="Стоп", emoji="⏹️", style=discord.ButtonStyle.danger, row=2, custom_id="music_stop")
     async def stop(self, interaction: discord.Interaction, _):
         await interaction.response.defer()
         if self.player:
@@ -612,7 +612,7 @@ class MusicControls(discord.ui.View):
             except Exception:
                 logger.exception("Failed to dispatch music_stopped")
 
-    @discord.ui.button(label="Инфо", emoji="ℹ️", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="Инфо", emoji="ℹ️", style=discord.ButtonStyle.secondary, row=2, custom_id="music_info")
     async def info(self, interaction: discord.Interaction, _):
         await interaction.response.defer(ephemeral=True)
         if not self.player or not await _require_same_voice_channel(interaction, self.player):
@@ -652,10 +652,12 @@ async def send_control_message(interaction: discord.Interaction, player: MusicPl
         description="Загрузка...",
         color=0x57F287,
     )
+    view = MusicControls(player)
     message = await interaction.followup.send(
         embed=embed,
-        view=MusicControls(player)
+        view=view
     )
+    interaction.client.add_view(view, message_id=message.id)
     player.control_message = message
 
 async def send_temporary_followup(
