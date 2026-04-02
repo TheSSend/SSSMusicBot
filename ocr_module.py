@@ -659,6 +659,28 @@ def clean_title_extras(value: str) -> str:
     return normalized.strip()
 
 
+def prune_ocr_search_noise(value: str) -> str:
+
+    normalized = strip_ocr_noise(value).strip()
+    if not normalized:
+        return ""
+
+    normalized = re.sub(
+        r"\s*[\(\[]\s*(?:official audio|official video|official music video|lyric video|visualizer|topic|premiere|reaction|review|cover|live|mix|radio edit|dfm mix|lyrics|snippet|preview|clip|shorts)\b.*[\)\]]\s*$",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"\s*(?:-|—|–|\|)\s*(?:official audio|official video|official music video|lyric video|visualizer|topic|premiere|reaction|review|cover|live|mix|radio edit|dfm mix|lyrics|snippet|preview|clip|shorts)\b.*$",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip(" \t\r\n-—–|()[]\"'«»")
+
+
 def score_track_match(track, title: str, artist: str) -> float:
 
     title_candidates = build_title_candidates(title)
@@ -718,8 +740,8 @@ def score_track_match(track, title: str, artist: str) -> float:
 
 def build_ocr_search_queries(title: str, artist: str) -> list[str]:
 
-    raw_title = strip_ocr_noise(title).strip()
-    raw_artist = strip_ocr_noise(artist).strip()
+    raw_title = prune_ocr_search_noise(title)
+    raw_artist = prune_ocr_search_noise(artist)
     title_clean = normalize_ocr_text(raw_title)
     artist_clean = normalize_ocr_text(raw_artist)
     title_cyr = replace_confusable_latin_with_cyrillic(title_clean)
@@ -745,24 +767,24 @@ def build_ocr_search_queries(title: str, artist: str) -> list[str]:
     artist_base = clean_title_extras(artist_clean)
     if title_base:
         variants.extend([
-            title_base,
-            f"{title_base} {artist_base}".strip(),
-            f"{artist_base} {title_base}".strip(),
+            prune_ocr_search_noise(title_base),
+            prune_ocr_search_noise(f"{title_base} {artist_base}".strip()),
+            prune_ocr_search_noise(f"{artist_base} {title_base}".strip()),
         ])
 
     if " | " in raw_title:
         left_side = raw_title.split(" | ", 1)[0].strip()
         if left_side:
             variants.extend([
-                left_side,
-                normalize_ocr_text(left_side),
-                replace_confusable_latin_with_cyrillic(left_side),
+                prune_ocr_search_noise(left_side),
+                normalize_ocr_text(prune_ocr_search_noise(left_side)),
+                replace_confusable_latin_with_cyrillic(prune_ocr_search_noise(left_side)),
             ])
 
     for title_guess in title_guesses:
-        variants.append(title_guess)
+        variants.append(prune_ocr_search_noise(title_guess))
         if artist_cyr:
-            variants.append(f"{title_guess} {artist_cyr}")
+            variants.append(prune_ocr_search_noise(f"{title_guess} {artist_cyr}"))
 
     queries = []
     seen = set()
