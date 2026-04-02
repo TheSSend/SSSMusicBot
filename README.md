@@ -171,10 +171,12 @@ Enable in `.env`:
 - `WEB_ADMIN_HOST=0.0.0.0` (bind to all interfaces for remote access)
 - `WEB_ADMIN_PORT=8080`
 - `WEB_ADMIN_TOKEN=...` (required)
+- `WEB_ADMIN_BASIC_USER=...` / `WEB_ADMIN_BASIC_PASSWORD=...` for browser login prompt
 
 Open in browser:
 
 - `http://<server-ip>:8080/?token=<WEB_ADMIN_TOKEN>`
+- Or, if Basic Auth is configured, open `http://<server-ip>:8080/` and sign in via the browser prompt
 
 Security notes:
 

@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+import base64
+import binascii
 from pathlib import Path
 
 import discord
@@ -22,9 +24,17 @@ def _int_or_zero(value: str) -> int:
     return int(value) if value.isdigit() else 0
 
 
+def _basic_auth_credentials() -> tuple[str, str]:
+    return (
+        os.getenv("WEB_ADMIN_BASIC_USER", "").strip(),
+        os.getenv("WEB_ADMIN_BASIC_PASSWORD", "").strip(),
+    )
+
+
 def _require_token(request: web.Request) -> None:
     expected = os.getenv("WEB_ADMIN_TOKEN", "")
-    if not expected:
+    basic_user, basic_password = _basic_auth_credentials()
+    if not expected and not (basic_user and basic_password):
         raise web.HTTPUnauthorized(text="WEB_ADMIN_TOKEN is not set")
 
     provided = request.query.get("token")
@@ -33,8 +43,25 @@ def _require_token(request: web.Request) -> None:
         if auth.lower().startswith("bearer "):
             provided = auth[7:].strip()
 
-    if provided != expected:
-        raise web.HTTPUnauthorized(text="Invalid token")
+    if expected and provided == expected:
+        return
+
+    if basic_user and basic_password:
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("basic "):
+            try:
+                decoded = base64.b64decode(auth[6:].strip()).decode("utf-8", errors="replace")
+                username, password = decoded.split(":", 1)
+            except (ValueError, binascii.Error):
+                username, password = "", ""
+            if username == basic_user and password == basic_password:
+                return
+        raise web.HTTPUnauthorized(
+            text="Invalid credentials",
+            headers={"WWW-Authenticate": 'Basic realm="Musicbot Admin"'},
+        )
+
+    raise web.HTTPUnauthorized(text="Invalid token")
 
 
 def _log_file_path() -> Path:
@@ -350,7 +377,7 @@ async def maybe_start_web_admin(bot: discord.Client) -> web.AppRunner | None:
     if not enabled:
         return None
 
-    host = os.getenv("WEB_ADMIN_HOST", "127.0.0.1")
+    host = os.getenv("WEB_ADMIN_HOST", "0.0.0.0")
     port_raw = os.getenv("WEB_ADMIN_PORT", "8080").strip()
     try:
         port = int(port_raw)
