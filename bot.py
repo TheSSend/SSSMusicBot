@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from music_core import (
     MusicPlayer, start_track, send_control_message, build_embed,
     build_queue_preview, MusicControls, display_author, send_temporary_followup,
-    dump_player_state  # NEW: added for resume
+    dump_player_state
 )
 from edit_guard import safe_message_edit, start_cleanup_task
 from json_store import JsonStore
@@ -41,6 +41,43 @@ _web_admin_runner = None
 
 # Store for player resumes
 state_store = JsonStore(data_path("player_state.json"))
+
+
+async def restore_control_message(guild: discord.Guild, player: MusicPlayer, pd: dict) -> None:
+    text_channel_id = pd.get("text_channel_id", 0)
+    if not text_channel_id:
+        return
+
+    text_channel = guild.get_channel(text_channel_id)
+    if not isinstance(text_channel, discord.TextChannel):
+        return
+
+    control_message_id = pd.get("control_message_id", 0)
+    if control_message_id:
+        try:
+            message = await text_channel.fetch_message(control_message_id)
+            await safe_message_edit(
+                message,
+                embed=build_embed(player),
+                view=MusicControls(player),
+            )
+            player.control_message = message
+            logger.info("Restored existing control message guild=%s message=%s", guild.id, control_message_id)
+            return
+        except discord.NotFound:
+            logger.info("Control message was deleted, creating a new one guild=%s message=%s", guild.id, control_message_id)
+        except Exception:
+            logger.exception("Failed to fetch existing control message guild=%s message=%s", guild.id, control_message_id)
+
+    try:
+        message = await text_channel.send(
+            embed=build_embed(player),
+            view=MusicControls(player),
+        )
+        player.control_message = message
+        logger.info("Created new control message guild=%s channel=%s", guild.id, text_channel.id)
+    except Exception:
+        logger.exception("Failed to create control message for resumed player guild=%s", guild.id)
 
 # ================= LOGGING =================
 
@@ -211,7 +248,18 @@ async def music_controls_updater():
                     logger.exception("Failed to dump player state")
 
                 if not getattr(player, "control_message", None):
-                    continue
+                    guild_id = getattr(getattr(player, "guild", None), "id", None)
+                    if not guild_id:
+                        continue
+                    state = state_store.load()
+                    pd = state.get(str(guild_id), {})
+                    if pd:
+                        try:
+                            await restore_control_message(player.guild, player, pd)
+                        except Exception:
+                            logger.exception("Failed to restore control message during update guild=%s", guild_id)
+                    if not getattr(player, "control_message", None):
+                        continue
 
                 try:
                     await safe_message_edit(
@@ -332,13 +380,7 @@ async def on_wavelink_node_ready(payload):
                     player.queue.put(q_track)
 
             # Restore control message
-            text_channel = guild.get_channel(pd.get("text_channel_id", 0))
-            if text_channel:
-                msg = await text_channel.send(
-                    embed=build_embed(player),
-                    view=MusicControls(player)
-                )
-                player.control_message = msg
+            await restore_control_message(guild, player, pd)
 
         except Exception:
             logger.exception("Failed to auto-resume player for guild %s", guild_id_str)

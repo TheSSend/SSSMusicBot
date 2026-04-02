@@ -236,6 +236,7 @@ def dump_player_state(player: MusicPlayer, store):
             "guild_id": player.guild.id,
             "channel_id": getattr(player.channel, "id", 0),
             "text_channel_id": getattr(player.control_message.channel, "id", 0) if player.control_message else 0,
+            "control_message_id": getattr(player.control_message, "id", 0) if player.control_message else 0,
             "track_encoded": player.current_track.encoded,
             "position": pos,
             "queue_encoded": queue_encoded,
