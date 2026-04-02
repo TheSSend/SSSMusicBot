@@ -113,10 +113,12 @@ def _iter_paddle_results(result):
 
 def _unwrap_paddle_result(item):
     payload = getattr(item, "res", None)
+    if payload is None:
+        payload = getattr(item, "json", None)
     if isinstance(payload, dict):
         payload = payload.get("res", payload)
     if payload is None and isinstance(item, dict):
-        payload = item.get("res", item)
+        payload = item.get("res", item.get("json", item))
     return payload or {}
 
 
@@ -127,11 +129,23 @@ def _extract_lines_from_paddle_result(item) -> list[str]:
 
     rec_texts = payload.get("rec_texts")
     if rec_texts is None:
-        rec_texts = []
+        rec_text = payload.get("rec_text")
+        if rec_text is None:
+            rec_texts = []
+        elif isinstance(rec_text, (list, tuple)):
+            rec_texts = list(rec_text)
+        else:
+            rec_texts = [rec_text]
 
     rec_scores = payload.get("rec_scores")
     if rec_scores is None:
-        rec_scores = []
+        rec_score = payload.get("rec_score")
+        if rec_score is None:
+            rec_scores = []
+        elif isinstance(rec_score, (list, tuple)):
+            rec_scores = list(rec_score)
+        else:
+            rec_scores = [rec_score]
 
     rec_boxes = payload.get("rec_boxes")
     if rec_boxes is None:
@@ -388,11 +402,44 @@ def extract_tracks(lines):
     logger.info("========== END OCR ==========")
 
     tracks = []
+    separator_patterns = (
+        r"\s+-\s+",
+        r"\s+—\s+",
+        r"\s+–\s+",
+        r"\s+\|\s+",
+        r"\s+:\s+",
+    )
+
+    def add_track_candidate(title: str, artist: str = "") -> None:
+        title = title.strip()
+        artist = artist.strip()
+
+        if not title:
+            return
+
+        candidate = (title, artist)
+        if candidate not in tracks:
+            tracks.append(candidate)
+
+    for line in cleaned:
+        split_candidate = None
+        for pattern in separator_patterns:
+            parts = re.split(pattern, line, maxsplit=1)
+            if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+                split_candidate = (parts[0].strip(), parts[1].strip())
+                break
+
+        if split_candidate:
+            add_track_candidate(*split_candidate)
 
     for i in range(0, len(cleaned) - 1, 2):
         title = cleaned[i]
         artist = cleaned[i + 1]
-        tracks.append((title.strip(), artist.strip()))
+        add_track_candidate(title, artist)
+
+    if not tracks:
+        for line in cleaned:
+            add_track_candidate(line, "")
 
     return tracks[:MAX_OCR_TRACKS]
 
