@@ -11,6 +11,7 @@ from wavelink import LavalinkException
 from edit_guard import safe_message_edit
 
 logger = logging.getLogger(__name__)
+logging.getLogger("lyricsgenius").setLevel(logging.WARNING)
 
 def build_queue_preview(player: "MusicPlayer", limit: int = 10) -> str:
     items = list(player.queue)[:limit]
@@ -58,6 +59,35 @@ def display_requester(value) -> str:
         return mention
     name = getattr(value, "display_name", None) or getattr(value, "name", None) or str(value)
     return " ".join(str(name).split()).strip() or "Неизвестно"
+
+LYRICS_CACHE_TTL_SECONDS = int(os.getenv("LYRICS_CACHE_TTL_SECONDS", "21600"))
+_lyrics_cache: dict[str, tuple[float, str, str]] = {}
+
+def _lyrics_cache_key(track) -> str:
+    return "|".join(
+        str(part or "").strip().lower()
+        for part in (
+            getattr(track, "encoded", None),
+            getattr(track, "title", None),
+            getattr(track, "author", None),
+            getattr(track, "length", None),
+        )
+    )
+
+def _lyrics_cache_get(track) -> tuple[str, str] | None:
+    key = _lyrics_cache_key(track)
+    cached = _lyrics_cache.get(key)
+    if not cached:
+        return None
+    expires_at, source, lyrics_text = cached
+    if time.time() >= expires_at:
+        _lyrics_cache.pop(key, None)
+        return None
+    return source, lyrics_text
+
+def _lyrics_cache_set(track, source: str, lyrics_text: str) -> None:
+    key = _lyrics_cache_key(track)
+    _lyrics_cache[key] = (time.time() + LYRICS_CACHE_TTL_SECONDS, source, lyrics_text)
 
 # ================= PLAYER =================
 
@@ -350,6 +380,18 @@ class MusicControls(discord.ui.View):
             if left and right:
                 clean_title, clean_author = right, left
 
+        cached_lyrics = _lyrics_cache_get(self.player.current_track)
+        if cached_lyrics is not None:
+            cached_source, cached_text = cached_lyrics
+            embed = discord.Embed(
+                title=f"🎤 Текст: {track_title}",
+                description=cached_text,
+                color=0x9B59B6,
+            )
+            embed.set_footer(text=f"Источник: {cached_source} (cache)")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
         genius_token = os.getenv("GENIUS_ACCESS_TOKEN", "").strip()
         if genius_token:
             try:
@@ -385,6 +427,8 @@ class MusicControls(discord.ui.View):
                             color=0x9B59B6,
                         )
                         embed.set_footer(text="Источник: Genius")
+                        _lyrics_cache_set(self.player.current_track, "Genius", lyrics_text)
+                        _lyrics_cache_set(self.player.current_track, "some-random-api", lyrics_text)
                         await interaction.followup.send(embed=embed, ephemeral=True)
                         return
             except ModuleNotFoundError:
@@ -432,6 +476,7 @@ class MusicControls(discord.ui.View):
                                             color=0x9B59B6,
                                         )
                                         embed.set_footer(text="Источник: LRCLIB")
+                                        _lyrics_cache_set(self.player.current_track, "LRCLIB", lyrics_text)
                                         await interaction.followup.send(embed=embed, ephemeral=True)
                                         return
                         except Exception:
@@ -451,6 +496,7 @@ class MusicControls(discord.ui.View):
                                         color=0x9B59B6,
                                     )
                                     embed.set_footer(text="Источник: lyrics.ovh")
+                                    _lyrics_cache_set(self.player.current_track, "lyrics.ovh", lyrics_text)
                                     await interaction.followup.send(embed=embed, ephemeral=True)
                                     return
                     except Exception:
