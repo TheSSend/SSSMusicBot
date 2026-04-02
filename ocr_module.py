@@ -55,10 +55,15 @@ ocr_engine_lock = asyncio.Lock()
 
 
 def _build_ocr_engine():
+    from paddleocr import PaddleOCR
 
-    from rapidocr_onnxruntime import RapidOCR
-
-    return RapidOCR()
+    return PaddleOCR(
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        text_detection_model_name="PP-OCRv5_mobile_det",
+        text_recognition_model_name="eslav_PP-OCRv5_mobile_rec",
+    )
 
 
 def _prepare_ocr_image(source_path: str) -> str:
@@ -66,6 +71,7 @@ def _prepare_ocr_image(source_path: str) -> str:
     with Image.open(source_path) as image:
         prepared = image.convert("RGB")
         prepared.thumbnail((OCR_MAX_SIDE, OCR_MAX_SIDE), Image.Resampling.LANCZOS)
+        prepared = prepared.resize((prepared.width * 2, prepared.height * 2), Image.Resampling.LANCZOS)
         prepared = ImageOps.autocontrast(prepared)
         prepared = prepared.filter(ImageFilter.SHARPEN)
 
@@ -79,14 +85,124 @@ def _prepare_ocr_binary_image(source_path: str) -> str:
     with Image.open(source_path) as image:
         prepared = image.convert("L")
         prepared.thumbnail((OCR_MAX_SIDE, OCR_MAX_SIDE), Image.Resampling.LANCZOS)
-        prepared = ImageOps.autocontrast(prepared)
         prepared = prepared.resize((prepared.width * 2, prepared.height * 2), Image.Resampling.LANCZOS)
-        prepared = prepared.point(lambda px: 255 if px > 150 else 0)
-        prepared = ImageOps.invert(prepared)
+        prepared = ImageOps.autocontrast(prepared)
+        prepared = prepared.filter(ImageFilter.SHARPEN)
+        prepared = prepared.point(lambda px: 255 if px > 170 else 0)
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             prepared.save(tmp.name, format="PNG", optimize=True)
             return tmp.name
+
+
+def _iter_paddle_results(result):
+    if result is None:
+        return []
+    if isinstance(result, (list, tuple)):
+        return list(result)
+    try:
+        return list(result)
+    except TypeError:
+        return [result]
+
+
+def _unwrap_paddle_result(item):
+    payload = getattr(item, "res", None)
+    if isinstance(payload, dict):
+        payload = payload.get("res", payload)
+    if payload is None and isinstance(item, dict):
+        payload = item.get("res", item)
+    return payload or {}
+
+
+def _extract_lines_from_paddle_result(item) -> list[str]:
+    payload = _unwrap_paddle_result(item)
+    if not isinstance(payload, dict):
+        return []
+
+    rec_texts = payload.get("rec_texts")
+    if rec_texts is None:
+        rec_texts = []
+
+    rec_scores = payload.get("rec_scores")
+    if rec_scores is None:
+        rec_scores = []
+
+    rec_boxes = payload.get("rec_boxes")
+    if rec_boxes is None:
+        rec_boxes = payload.get("rec_polys")
+    if rec_boxes is None:
+        rec_boxes = payload.get("dt_polys")
+    if rec_boxes is None:
+        rec_boxes = []
+
+    parts = []
+    for index, text in enumerate(rec_texts):
+        text = str(text).strip()
+        if not text:
+            continue
+
+        try:
+            score = float(rec_scores[index]) if index < len(rec_scores) else 1.0
+        except (TypeError, ValueError):
+            score = 1.0
+
+        if score < OCR_MIN_SCORE:
+            continue
+
+        try:
+            box = rec_boxes[index]
+        except Exception:
+            continue
+
+        points = []
+        for point in box:
+            try:
+                x, y = float(point[0]), float(point[1])
+            except Exception:
+                continue
+            points.append((x, y))
+
+        if not points:
+            continue
+
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        parts.append(
+            {
+                "text": text,
+                "x": min(xs),
+                "y": sum(ys) / len(ys),
+                "h": max(ys) - min(ys),
+            }
+        )
+
+    parts.sort(key=lambda part: (part["y"], part["x"]))
+
+    if not parts:
+        return []
+
+    lines = []
+    current_line = [parts[0]]
+
+    for part in parts[1:]:
+        previous = current_line[-1]
+        dynamic_threshold = max(
+            OCR_LINE_Y_THRESHOLD,
+            min(previous["h"], part["h"]) * 0.4,
+        )
+
+        if abs(part["y"] - previous["y"]) <= dynamic_threshold:
+            current_line.append(part)
+            continue
+
+        lines.append(" ".join(segment["text"] for segment in sorted(current_line, key=lambda item: item["x"])).strip())
+        current_line = [part]
+
+    if current_line:
+        lines.append(" ".join(segment["text"] for segment in sorted(current_line, key=lambda item: item["x"])).strip())
+
+    return lines
 
 
 def _extract_lines_from_ocr_result(result) -> list[str]:
@@ -193,15 +309,18 @@ def merge_ocr_lines(primary: list[str], secondary: list[str]) -> list[str]:
 
 
 def _run_ocr(engine, path: str, binary_path: str | None = None) -> list[str]:
-
-    result, _elapsed = engine(path)
-    lines = _extract_lines_from_ocr_result(result)
+    result = engine.predict(path)
+    lines = []
+    for item in _iter_paddle_results(result):
+        lines.extend(_extract_lines_from_paddle_result(item))
 
     if binary_path is None:
         return lines
 
-    binary_result, _elapsed = engine(binary_path)
-    binary_lines = _extract_lines_from_ocr_result(binary_result)
+    binary_result = engine.predict(binary_path)
+    binary_lines = []
+    for item in _iter_paddle_results(binary_result):
+        binary_lines.extend(_extract_lines_from_paddle_result(item))
     return merge_ocr_lines(lines, binary_lines)
 
 
@@ -214,7 +333,7 @@ async def get_ocr_engine():
                 ocr_engine = await asyncio.to_thread(_build_ocr_engine)
             except ModuleNotFoundError as exc:
                 raise RuntimeError(
-                    "Модуль rapidocr-onnxruntime не установлен. Установи зависимости из requirements.txt"
+                    "Модуль paddleocr не установлен. Установи зависимости из requirements.txt"
                 ) from exc
             except Exception as exc:
                 raise RuntimeError("OCR не удалось инициализировать") from exc

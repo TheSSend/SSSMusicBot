@@ -5,7 +5,7 @@ Discord bot with music playback, OCR track parsing, giveaways, signups, and util
 ## Features
 
 - Music playback through Lavalink + Wavelink
-- OCR-based `/playimage` command via rapidocr-onnxruntime
+- OCR-based `/playimage` command via PaddleOCR
 - Giveaways and signups stored locally in JSON (crash-safe atomic writes)
 - Utility modules for announcements and family applications
 
@@ -121,7 +121,7 @@ sudo journalctl -u musicbot -f
 
 - `bot.py` - main bot entrypoint and slash commands
 - `music_core.py` - music player, controls, and voice handshake fix for Lavalink v4
-- `ocr_module.py` - OCR-based music parsing via rapidocr-onnxruntime
+- `ocr_module.py` - OCR-based music parsing via PaddleOCR
 - `config.py` - shared configuration (OWNER_ID, timezones)
 - `json_store.py` - crash-safe JSON file storage with atomic writes
 - `lavalink/application.yml.example` - example Lavalink config
@@ -131,7 +131,22 @@ For youtube-source plugin based playback, use `lavalink.server.sources.youtube: 
 
 ### OCR tuning
 
-`/playimage` uses a lightweight local OCR engine based on ONNX Runtime to avoid `easyocr/torch` memory spikes on small servers.
+`/playimage` now uses `PaddleOCR` for better multilingual recognition, especially for Cyrillic-heavy screenshots and song lists.
+
+Recommended Ubuntu install:
+
+```bash
+source .venv/bin/activate
+python -m pip uninstall -y rapidocr-onnxruntime
+python -m pip install -U paddlepaddle paddleocr
+```
+
+If you want a clean reinstall:
+
+```bash
+python -m pip uninstall -y paddleocr paddlepaddle rapidocr-onnxruntime
+python -m pip install -U paddlepaddle paddleocr
+```
 
 ## Notes For GitHub
 
