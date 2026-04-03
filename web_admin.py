@@ -825,7 +825,7 @@ async def _logs(request: web.Request) -> web.Response:
       <pre>{_esc(tail)}</pre>
     </div>
     """
-    return web.Response(text=_page("Logs", body), content_type="text/html")
+    return web.Response(text=_page("Logs", token, body), content_type="text/html")
 
 
 async def _config_get(request: web.Request) -> web.Response:
