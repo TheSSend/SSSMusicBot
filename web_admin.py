@@ -1865,6 +1865,8 @@ async def _restart_bot(request: web.Request) -> web.Response:
     if completed.returncode != 0:
         stderr = (completed.stderr or completed.stdout or "restart failed").strip()
         logger.warning("Restart command failed: %s", stderr)
+        if "password is required" in stderr.lower() or "a password is required" in stderr.lower():
+            stderr += "\nGrant the musicbot service user NOPASSWD access to restart musicbot.service via sudoers."
         return web.Response(text=f"Restart failed: {stderr}\n", content_type="text/plain", status=500)
     return web.Response(text="Restart queued/executed\n", content_type="text/plain")
 

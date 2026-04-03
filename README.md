@@ -196,6 +196,7 @@ Security notes:
 
 - Use a strong token and keep it private.
 - If you expose restart functionality, lock down `WEB_ADMIN_RESTART_COMMAND` with sudoers so it can only restart `musicbot.service`.
+- Install the helper sudoers file from `deploy/systemd/musicbot-restart.sudoers` to avoid password prompts when using the Restart button.
 - Prefer running behind a reverse proxy with HTTPS if exposing to the internet.
 
 ## Lyrics source fallback

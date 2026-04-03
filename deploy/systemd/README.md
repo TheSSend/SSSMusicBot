@@ -52,10 +52,11 @@ sudo journalctl -u musicbot-web -f
 If you want the web panel to restart the bot, allow the service user to restart only `musicbot.service`:
 
 ```bash
-sudo visudo
+sudo cp deploy/systemd/musicbot-restart.sudoers /etc/sudoers.d/musicbot-restart
+sudo chmod 440 /etc/sudoers.d/musicbot-restart
 ```
 
-Add a line like:
+Or edit it manually with `visudo` and keep the same line:
 
 ```text
 musicbot ALL=NOPASSWD: /bin/systemctl restart musicbot.service
