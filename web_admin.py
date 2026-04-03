@@ -124,7 +124,7 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     for label, href in nav_items:
         active = " active" if label.lower() in active_title else ""
         nav_html.append(
-            f'<a class="nav-item{active}" href="{href.format(token=_esc(token))}"><span>{_esc(label)}</span><span>?</span></a>'
+            f'<a class="nav-item{active}" href="{href.format(token=_esc(token))}"><span>{_esc(label)}</span><span>›</span></a>'
         )
 
     return f"""<!doctype html>
@@ -1058,7 +1058,7 @@ async def _settings_get(request: web.Request) -> web.Response:
       <pre>{_esc(json.dumps(cfg, ensure_ascii=False, indent=2))}</pre>
     </div>
     """
-    return web.Response(text=_page("Module settings", body), content_type="text/html")
+    return web.Response(text=_page("Module settings", token, body), content_type="text/html")
 
 
 async def _settings_save(request: web.Request) -> web.Response:
