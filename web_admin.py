@@ -134,22 +134,26 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{_esc(title)}</title>
-  <style>
+    <style>
     :root {{
-      --bg: #07111f;
-      --panel: rgba(11, 18, 32, 0.82);
-      --panel-2: rgba(18, 28, 48, 0.92);
-      --panel-3: rgba(20, 32, 58, 0.92);
-      --border: rgba(148, 163, 184, 0.16);
+      --bg: #09112a;
+      --bg-glow-1: rgba(177, 60, 255, 0.32);
+      --bg-glow-2: rgba(31, 75, 202, 0.24);
+      --panel: rgba(9, 17, 36, 0.82);
+      --panel-2: rgba(14, 23, 47, 0.94);
+      --panel-3: rgba(18, 30, 60, 0.96);
+      --panel-4: rgba(24, 39, 76, 0.96);
+      --border: rgba(148, 163, 184, 0.14);
       --text: #e7eefb;
       --muted: #96a6c0;
-      --accent: #7dd3fc;
-      --accent-2: #60a5fa;
+      --accent: #d977ff;
+      --accent-2: #6ea8ff;
+      --accent-3: #49c8ff;
       --success: #22c55e;
       --danger: #ef4444;
       --warning: #f59e0b;
-      --shadow: 0 18px 50px rgba(2, 6, 23, 0.42);
-      --radius: 20px;
+      --shadow: 0 22px 60px rgba(2, 6, 23, 0.48);
+      --radius: 22px;
     }}
     * {{ box-sizing: border-box; }}
     html, body {{ min-height: 100%; }}
@@ -157,9 +161,9 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
       margin: 0;
       font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background:
-        radial-gradient(circle at top left, rgba(37, 99, 235, 0.20), transparent 28%),
-        radial-gradient(circle at top right, rgba(14, 165, 233, 0.14), transparent 22%),
-        linear-gradient(180deg, #060d18 0%, #081221 100%);
+        radial-gradient(circle at top left, var(--bg-glow-1), transparent 30%),
+        radial-gradient(circle at 82% 18%, var(--bg-glow-2), transparent 26%),
+        linear-gradient(180deg, #07101f 0%, #091424 55%, #08111f 100%);
       color: var(--text);
     }}
     a {{ color: inherit; text-decoration: none; }}
@@ -169,8 +173,8 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
       min-height: 100vh;
       display: grid;
       grid-template-columns: 272px minmax(0, 1fr);
-      gap: 18px;
-      padding: 18px;
+      gap: 20px;
+      padding: 20px;
     }}
     .sidebar {{
       position: sticky;
@@ -183,7 +187,7 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
       border: 1px solid var(--border);
       border-radius: var(--radius);
       background: var(--panel);
-      backdrop-filter: blur(14px);
+      backdrop-filter: blur(18px);
       box-shadow: var(--shadow);
       min-height: calc(100vh - 36px);
     }}
@@ -201,18 +205,18 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     .nav-item {{
       display: flex; justify-content: space-between; align-items: center; gap: 12px;
       padding: 12px 14px; border-radius: 14px;
-      background: rgba(255, 255, 255, 0.02); border: 1px solid transparent;
+      background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(148, 163, 184, 0.05);
       color: var(--text); transition: all .15s ease;
     }}
     .nav-item:hover {{
-      background: rgba(96, 165, 250, 0.10);
-      border-color: rgba(96, 165, 250, 0.18);
+      background: rgba(125, 211, 252, 0.08);
+      border-color: rgba(125, 211, 252, 0.18);
       transform: translateX(2px);
     }}
     .nav-item.active {{
-      background: linear-gradient(180deg, rgba(14, 165, 233, 0.18), rgba(37, 99, 235, 0.12));
-      border-color: rgba(96, 165, 250, 0.24);
-      box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.08);
+      background: linear-gradient(180deg, rgba(177, 60, 255, 0.18), rgba(73, 200, 255, 0.10));
+      border-color: rgba(217, 119, 255, 0.24);
+      box-shadow: inset 0 0 0 1px rgba(217, 119, 255, 0.10);
     }}
     .nav-item span:last-child {{ color: var(--muted); }}
     .sidebar-card {{
@@ -231,7 +235,7 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     .topbar {{
       display: flex; justify-content: space-between; gap: 16px; align-items: center;
       padding: 20px 22px;
-      background: linear-gradient(180deg, rgba(17, 27, 45, 0.92), rgba(11, 18, 32, 0.88));
+      background: linear-gradient(180deg, rgba(13, 22, 44, 0.96), rgba(9, 17, 36, 0.92));
       border: 1px solid var(--border);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
@@ -247,6 +251,8 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     .badge.green {{ background: rgba(34, 197, 94, 0.16); border-color: rgba(34, 197, 94, 0.28); }}
     .badge.red {{ background: rgba(239, 68, 68, 0.16); border-color: rgba(239, 68, 68, 0.28); }}
     .badge.yellow {{ background: rgba(245, 158, 11, 0.16); border-color: rgba(245, 158, 11, 0.28); }}
+    .badge.purple {{ background: rgba(177, 60, 255, 0.16); border-color: rgba(177, 60, 255, 0.28); }}
+    .badge.blue {{ background: rgba(73, 200, 255, 0.12); border-color: rgba(73, 200, 255, 0.26); }}
     .grid {{
       display: grid; gap: 18px;
       grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -257,7 +263,7 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
       border-radius: var(--radius);
       padding: 18px;
       box-shadow: var(--shadow);
-      backdrop-filter: blur(14px);
+      backdrop-filter: blur(18px);
     }}
     .card h2, .card h3 {{ margin: 0 0 12px; }}
     .subtle {{ color: var(--muted); font-size: 14px; }}
@@ -304,7 +310,7 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
     pre {{
       margin: 0; padding: 14px; border-radius: 14px; overflow: auto;
-      background: rgba(7, 13, 23, 0.95); border: 1px solid var(--border);
+      background: rgba(6, 12, 21, 0.96); border: 1px solid var(--border);
       max-height: 420px;
     }}
     details summary {{ cursor: pointer; color: #7dd3fc; }}
@@ -312,6 +318,30 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     .stacked {{ display: flex; flex-direction: column; gap: 12px; }}
     .mini {{ font-size: 12px; color: var(--muted); }}
     .page-title {{ display: flex; flex-direction: column; gap: 6px; }}
+    .hero {{
+      position: relative;
+      overflow: hidden;
+      background: linear-gradient(135deg, rgba(177, 60, 255, 0.22) 0%, rgba(72, 88, 255, 0.16) 44%, rgba(9, 17, 36, 0.96) 100%);
+    }}
+    .hero::after {{
+      content: "";
+      position: absolute;
+      inset: -140px -180px auto auto;
+      width: 420px;
+      height: 420px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(217, 119, 255, 0.36), transparent 68%);
+      pointer-events: none;
+    }}
+    .hero .brand h1 {{
+      font-size: 30px;
+      letter-spacing: -0.03em;
+    }}
+    .hero .brand p {{
+      max-width: 720px;
+      font-size: 15px;
+      line-height: 1.5;
+    }}
     @media (max-width: 1100px) {{
       .app-shell {{ grid-template-columns: 1fr; }}
       .sidebar {{ position: relative; top: 0; min-height: auto; }}
@@ -693,7 +723,7 @@ def _render_dashboard(bot: discord.Client, token: str, store: JsonStore) -> str:
     ]
 
     body = f"""
-    <div class="topbar">
+    <div class="topbar hero">
       <div class="brand">
         <h1>Musicbot Admin</h1>
         <p>Dashboard, settings, live state and runtime config.</p>
@@ -768,7 +798,7 @@ def _render_music_page(bot: discord.Client, token: str) -> str:
     status = _collect_runtime_status(bot)
     players = status.get("players") if isinstance(status.get("players"), list) else []
     body = f"""
-    <div class="topbar">
+    <div class="topbar hero">
       <div class="brand">
         <h1>Music</h1>
         <p>Live players, current track, queue, and control-message state.</p>
@@ -920,7 +950,7 @@ async def _logs(request: web.Request) -> web.Response:
 
     tail, source = _read_log_tail(n)
     body = f"""
-    <div class="topbar">
+    <div class="topbar hero">
       <div class="brand">
         <h1>Logs</h1>
         <p>Tail of <code>{_esc(source)}</code></p>
@@ -999,7 +1029,7 @@ async def _env_get(request: web.Request) -> web.Response:
     token = request.query.get("token", "")
     current = _current_env_snapshot()
     body = f"""
-    <div class="topbar">
+    <div class="topbar hero">
       <div class="brand">
         <h1>Environment</h1>
         <p>Edit <code>.env</code> values for the running bot. Restart required for most keys.</p>
@@ -1165,7 +1195,7 @@ async def _settings_get(request: web.Request) -> web.Response:
     """
 
     body = f"""
-    <div class="topbar">
+    <div class="topbar hero">
       <div class="brand">
         <h1>Module settings</h1>
         <p>Edit <code>web_config.json</code> for module-specific overrides.</p>
