@@ -111,6 +111,22 @@ def _field_input(name: str, value: str | None, input_type: str = "text", placeho
 
 
 def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
+    nav_items = [
+        ("Dashboard", "/?token={token}"),
+        ("Music", "/music?token={token}"),
+        ("Environment", "/env?token={token}"),
+        ("Module settings", "/settings?token={token}"),
+        ("Logs", "/logs?n=200&token={token}"),
+        ("API status", "/api/status?token={token}"),
+    ]
+    active_title = (title or "").lower()
+    nav_html = []
+    for label, href in nav_items:
+        active = " active" if label.lower() in active_title else ""
+        nav_html.append(
+            f'<a class="nav-item{active}" href="{href.format(token=_esc(token))}"><span>{_esc(label)}</span><span>?</span></a>'
+        )
+
     return f"""<!doctype html>
 <html>
 <head>
@@ -119,69 +135,150 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
   <title>{_esc(title)}</title>
   <style>
     :root {{
-      --bg: #0b1220;
-      --panel: #101a2f;
-      --panel-2: #14203a;
-      --border: rgba(148, 163, 184, 0.18);
-      --text: #e5eefc;
-      --muted: #9fb0ca;
-      --accent: #38bdf8;
-      --accent-2: #22c55e;
+      --bg: #07111f;
+      --panel: rgba(11, 18, 32, 0.82);
+      --panel-2: rgba(18, 28, 48, 0.92);
+      --panel-3: rgba(20, 32, 58, 0.92);
+      --border: rgba(148, 163, 184, 0.16);
+      --text: #e7eefb;
+      --muted: #96a6c0;
+      --accent: #7dd3fc;
+      --accent-2: #60a5fa;
+      --success: #22c55e;
       --danger: #ef4444;
       --warning: #f59e0b;
-      --shadow: 0 12px 30px rgba(2, 6, 23, 0.35);
+      --shadow: 0 18px 50px rgba(2, 6, 23, 0.42);
+      --radius: 20px;
     }}
     * {{ box-sizing: border-box; }}
+    html, body {{ min-height: 100%; }}
     body {{
       margin: 0;
       font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: radial-gradient(circle at top left, #12203c, var(--bg) 38%);
+      background:
+        radial-gradient(circle at top left, rgba(37, 99, 235, 0.20), transparent 28%),
+        radial-gradient(circle at top right, rgba(14, 165, 233, 0.14), transparent 22%),
+        linear-gradient(180deg, #060d18 0%, #081221 100%);
       color: var(--text);
     }}
-    a {{ color: #7dd3fc; text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
-    .wrap {{ max-width: 1300px; margin: 0 auto; padding: 24px; }}
+    a {{ color: inherit; text-decoration: none; }}
+    a:hover {{ text-decoration: none; }}
+    code, pre {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }}
+    .app-shell {{
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 272px minmax(0, 1fr);
+      gap: 18px;
+      padding: 18px;
+    }}
+    .sidebar {{
+      position: sticky;
+      top: 18px;
+      align-self: start;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--panel);
+      backdrop-filter: blur(14px);
+      box-shadow: var(--shadow);
+      min-height: calc(100vh - 36px);
+    }}
+    .brand-stack {{ display: flex; flex-direction: column; gap: 8px; }}
+    .brand-pill {{
+      display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+      padding: 6px 10px; border-radius: 999px;
+      background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.18);
+      color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .06em;
+      text-transform: uppercase;
+    }}
+    .brand-title {{ margin: 0; font-size: 28px; line-height: 1.05; }}
+    .brand-subtitle {{ margin: 0; color: var(--muted); font-size: 14px; }}
+    .nav {{ display: flex; flex-direction: column; gap: 8px; }}
+    .nav-item {{
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      padding: 12px 14px; border-radius: 14px;
+      background: rgba(255, 255, 255, 0.02); border: 1px solid transparent;
+      color: var(--text); transition: all .15s ease;
+    }}
+    .nav-item:hover {{
+      background: rgba(96, 165, 250, 0.10);
+      border-color: rgba(96, 165, 250, 0.18);
+      transform: translateX(2px);
+    }}
+    .nav-item.active {{
+      background: linear-gradient(180deg, rgba(14, 165, 233, 0.18), rgba(37, 99, 235, 0.12));
+      border-color: rgba(96, 165, 250, 0.24);
+      box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.08);
+    }}
+    .nav-item span:last-child {{ color: var(--muted); }}
+    .sidebar-card {{
+      padding: 14px; border-radius: 16px;
+      background: var(--panel-2); border: 1px solid var(--border);
+    }}
+    .sidebar-card h4 {{ margin: 0 0 8px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }}
+    .sidebar-card p {{ margin: 0; color: var(--text); font-size: 14px; line-height: 1.45; }}
+    .sidebar-chip-row {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+    .sidebar-chip {{
+      display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px;
+      border-radius: 999px; border: 1px solid rgba(148, 163, 184, 0.16);
+      background: rgba(255, 255, 255, 0.03); color: var(--text); font-size: 12px;
+    }}
+    .workspace {{ display: flex; flex-direction: column; gap: 18px; min-width: 0; }}
     .topbar {{
       display: flex; justify-content: space-between; gap: 16px; align-items: center;
-      margin-bottom: 20px; padding: 18px 20px;
-      background: rgba(16, 26, 47, 0.8); border: 1px solid var(--border);
-      border-radius: 18px; box-shadow: var(--shadow); backdrop-filter: blur(10px);
+      padding: 20px 22px;
+      background: linear-gradient(180deg, rgba(17, 27, 45, 0.92), rgba(11, 18, 32, 0.88));
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
     }}
     .brand h1 {{ margin: 0; font-size: 28px; }}
     .brand p {{ margin: 6px 0 0; color: var(--muted); }}
     .chips {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }}
-    .chip {{
+    .chip, .badge {{
       display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px;
-      border-radius: 999px; background: rgba(59, 130, 246, 0.14);
-      border: 1px solid rgba(59, 130, 246, 0.25); color: var(--text); font-size: 13px;
+      border-radius: 999px; background: rgba(148, 163, 184, 0.12);
+      border: 1px solid rgba(148, 163, 184, 0.18); color: var(--text); font-size: 13px;
     }}
+    .badge.green {{ background: rgba(34, 197, 94, 0.16); border-color: rgba(34, 197, 94, 0.28); }}
+    .badge.red {{ background: rgba(239, 68, 68, 0.16); border-color: rgba(239, 68, 68, 0.28); }}
+    .badge.yellow {{ background: rgba(245, 158, 11, 0.16); border-color: rgba(245, 158, 11, 0.28); }}
     .grid {{
       display: grid; gap: 18px;
       grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
     }}
     .card {{
-      background: rgba(16, 26, 47, 0.92); border: 1px solid var(--border);
-      border-radius: 18px; padding: 18px; box-shadow: var(--shadow);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
     }}
     .card h2, .card h3 {{ margin: 0 0 12px; }}
     .subtle {{ color: var(--muted); font-size: 14px; }}
-    .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }}
+    .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 12px; }}
     .stat {{
-      padding: 14px; border-radius: 14px; background: rgba(20, 32, 58, 0.92);
-      border: 1px solid var(--border);
+      padding: 14px; border-radius: 16px; background: var(--panel-3);
+      border: 1px solid var(--border); min-height: 98px;
     }}
     .stat .label {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
-    .stat .value {{ font-size: 24px; font-weight: 700; margin-top: 6px; }}
+    .stat .value {{ font-size: 26px; font-weight: 800; margin-top: 6px; }}
     .stat .hint {{ color: var(--muted); font-size: 12px; margin-top: 4px; }}
     .section-title {{ display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }}
     .btn, button {{
       display: inline-flex; align-items: center; justify-content: center; gap: 8px;
       padding: 10px 14px; border-radius: 12px; border: 1px solid transparent;
-      background: linear-gradient(180deg, rgba(56, 189, 248, 0.95), rgba(37, 99, 235, 0.95));
-      color: white; font-weight: 600; cursor: pointer; text-decoration: none;
+      background: linear-gradient(180deg, rgba(96, 165, 250, 0.96), rgba(37, 99, 235, 0.96));
+      color: white; font-weight: 700; cursor: pointer; text-decoration: none;
+      transition: transform .12s ease, filter .12s ease;
     }}
+    .btn:hover, button:hover {{ filter: brightness(1.05); transform: translateY(-1px); }}
     .btn.secondary {{
-      background: rgba(20, 32, 58, 0.95); border-color: var(--border); color: var(--text);
+      background: rgba(17, 27, 45, 0.96); border-color: var(--border); color: var(--text);
     }}
     .btn.success {{ background: linear-gradient(180deg, rgba(34, 197, 94, 0.95), rgba(21, 128, 61, 0.95)); }}
     .btn.danger {{ background: linear-gradient(180deg, rgba(248, 113, 113, 0.95), rgba(220, 38, 38, 0.95)); }}
@@ -189,41 +286,72 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     .field-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }}
     .field {{
       display: flex; flex-direction: column; gap: 6px; padding: 12px;
-      background: rgba(20, 32, 58, 0.9); border-radius: 14px; border: 1px solid var(--border);
+      background: rgba(17, 27, 45, 0.88); border-radius: 16px; border: 1px solid var(--border);
     }}
     .field label {{ font-size: 13px; color: var(--muted); }}
     .field input, .field textarea, .field select {{
       width: 100%; padding: 11px 12px; border-radius: 12px;
-      background: rgba(8, 15, 28, 0.95); color: var(--text);
+      background: rgba(7, 13, 23, 0.95); color: var(--text);
       border: 1px solid rgba(148, 163, 184, 0.22);
+      outline: none;
     }}
+    .field input:focus, .field textarea:focus, .field select:focus {{ border-color: rgba(125, 211, 252, 0.45); box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.14); }}
     .field textarea {{ min-height: 160px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
-    .hint {{ color: var(--muted); font-size: 12px; }}
+    .hint {{ color: var(--muted); font-size: 12px; line-height: 1.4; }}
     table {{ width: 100%; border-collapse: collapse; overflow: hidden; }}
     th, td {{ padding: 10px 12px; text-align: left; border-bottom: 1px solid rgba(148, 163, 184, 0.12); vertical-align: top; }}
     th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
     pre {{
       margin: 0; padding: 14px; border-radius: 14px; overflow: auto;
-      background: rgba(8, 15, 28, 0.95); border: 1px solid var(--border);
+      background: rgba(7, 13, 23, 0.95); border: 1px solid var(--border);
       max-height: 420px;
     }}
     details summary {{ cursor: pointer; color: #7dd3fc; }}
-    .badge {{
-      display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 999px;
-      font-size: 12px; font-weight: 700; background: rgba(148, 163, 184, 0.16);
-      border: 1px solid rgba(148, 163, 184, 0.22);
-    }}
-    .badge.green {{ background: rgba(34, 197, 94, 0.16); border-color: rgba(34, 197, 94, 0.26); }}
-    .badge.red {{ background: rgba(239, 68, 68, 0.16); border-color: rgba(239, 68, 68, 0.26); }}
-    .badge.yellow {{ background: rgba(245, 158, 11, 0.16); border-color: rgba(245, 158, 11, 0.26); }}
-    .muted {{ color: var(--muted); }}
     .footer {{ margin-top: 20px; color: var(--muted); font-size: 12px; }}
+    .stacked {{ display: flex; flex-direction: column; gap: 12px; }}
+    .mini {{ font-size: 12px; color: var(--muted); }}
+    .page-title {{ display: flex; flex-direction: column; gap: 6px; }}
+    @media (max-width: 1100px) {{
+      .app-shell {{ grid-template-columns: 1fr; }}
+      .sidebar {{ position: relative; top: 0; min-height: auto; }}
+    }}
+    @media (max-width: 720px) {{
+      .topbar {{ flex-direction: column; align-items: flex-start; }}
+      .chips {{ justify-content: flex-start; }}
+      .section-title {{ flex-direction: column; align-items: flex-start; }}
+      .actions {{ width: 100%; }}
+      .btn, button {{ width: 100%; }}
+      .nav-item {{ width: 100%; }}
+    }}
     {extra_head}
   </style>
 </head>
 <body>
-  <div class="wrap">
-    {body}
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-stack">
+        <div class="brand-pill">Musicbot Admin</div>
+        <h1 class="brand-title">Control plane</h1>
+        <p class="brand-subtitle">Music, environment, logs and module config in one place.</p>
+      </div>
+      <nav class="nav">
+        {''.join(nav_html)}
+      </nav>
+      <div class="sidebar-card">
+        <h4>Access</h4>
+        <p>Basic Auth or token. Keep this panel behind a strong password if exposed over IP.</p>
+      </div>
+      <div class="sidebar-card stacked">
+        <h4>Status</h4>
+        <div class="sidebar-chip-row">
+          <span class="sidebar-chip">{_esc(os.getenv('WEB_ADMIN_HOST', '0.0.0.0'))}:{_esc(os.getenv('WEB_ADMIN_PORT', '8080'))}</span>
+          <span class="sidebar-chip">{_esc('token fallback enabled')}</span>
+        </div>
+      </div>
+    </aside>
+    <main class="workspace">
+      {body}
+    </main>
   </div>
 </body>
 </html>
