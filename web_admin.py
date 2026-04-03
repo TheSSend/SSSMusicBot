@@ -1,18 +1,56 @@
 import os
 import json
+import time
+import html as html_lib
 import logging
 import base64
 import binascii
 from pathlib import Path
+from urllib.parse import quote_plus
 
 import discord
+import wavelink
 from aiohttp import web
 
 from json_store import JsonStore
 from runtime_paths import data_path
+from music_core import display_author
 
 
 logger = logging.getLogger(__name__)
+_BOOT_TS = time.time()
+
+ENV_EDITABLE_FIELDS: list[tuple[str, str, str, bool, str]] = [
+    ("DISCORD_TOKEN", "Discord token", "password", True, "Required. Restart required after change."),
+    ("OWNER_ID", "Owner ID", "text", False, "Discord user ID."),
+    ("GUILD_ID", "Guild ID", "text", False, "Optional guild-scoped command sync."),
+    ("LAVALINK_HOST", "Lavalink host", "text", False, "Host or IP of Lavalink."),
+    ("LAVALINK_PORT", "Lavalink port", "text", False, "Usually 2333."),
+    ("LAVALINK_PASSWORD", "Lavalink password", "password", True, "Keep private."),
+    ("MUSICBOT_DATA_DIR", "Data dir", "text", False, "Folder for JSON state files."),
+    ("MUSICBOT_LOG_DIR", "Log dir", "text", False, "Folder for log files."),
+    ("PLAYER_STATE_DUMP_INTERVAL", "Player state dump interval", "text", False, "Seconds."),
+    ("LYRICS_CACHE_TTL_SECONDS", "Lyrics cache TTL", "text", False, "Seconds."),
+    ("GENIUS_ACCESS_TOKEN", "Genius token", "password", True, "Enables Genius lyrics fallback."),
+    ("WEB_ADMIN_ENABLED", "Web admin enabled", "text", False, "1/0, true/false."),
+    ("WEB_ADMIN_HOST", "Web admin host", "text", False, "Use 0.0.0.0 for external access."),
+    ("WEB_ADMIN_PORT", "Web admin port", "text", False, "Listening port."),
+    ("WEB_ADMIN_TOKEN", "Web admin token", "password", True, "Bearer/token auth fallback."),
+    ("WEB_ADMIN_BASIC_USER", "Web admin user", "text", False, "Browser login username."),
+    ("WEB_ADMIN_BASIC_PASSWORD", "Web admin password", "password", True, "Browser login password."),
+    ("GIVEAWAY_ADMIN_ROLE_ID", "Giveaway admin role", "text", False, "Legacy env fallback."),
+    ("GSAY_ALLOWED_ROLES", "GSay allowed roles", "text", False, "Comma-separated IDs."),
+    ("HR_ACCESS", "JoinFamily HR access", "text", False, "Comma-separated IDs."),
+    ("FAMILY_CALL_CHANNELS", "Family call channels", "text", False, "Comma-separated IDs."),
+    ("FAMILY_LOG_CHANNEL", "Family log channel", "text", False, "Legacy env fallback."),
+    ("FAMILY_REMOVE_ROLE_ID", "Family remove role", "text", False, "Legacy env fallback."),
+    ("FAMILY_ADD_ROLE_1_ID", "Family add role 1", "text", False, "Legacy env fallback."),
+    ("FAMILY_ADD_ROLE_2_ID", "Family add role 2", "text", False, "Legacy env fallback."),
+    ("SIGNUP_MANAGERS", "Signups managers", "text", False, "Comma-separated IDs."),
+    ("SIGNUP_ADMINS", "Signups admins", "text", False, "Comma-separated IDs."),
+]
+
+ENV_FIELD_MAP = {name: (label, input_type, secret, hint) for name, label, input_type, secret, hint in ENV_EDITABLE_FIELDS}
 
 def _csv_ints(value: str) -> list[int]:
     parts = [p.strip() for p in (value or "").split(",")]
@@ -22,6 +60,446 @@ def _csv_ints(value: str) -> list[int]:
 def _int_or_zero(value: str) -> int:
     value = (value or "").strip()
     return int(value) if value.isdigit() else 0
+
+
+def _esc(value: object) -> str:
+    return html_lib.escape("" if value is None else str(value), quote=True)
+
+
+def _mask_secret(value: str | None) -> str:
+    if not value:
+        return ""
+    if len(value) <= 4:
+        return "••••"
+    return f"{value[:2]}••••{value[-2:]}"
+
+
+def _format_duration_ms(value: int | float | None) -> str:
+    if value is None:
+        return "—"
+    total_seconds = max(0, int(value // 1000 if value > 1000 else value))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def _format_uptime(seconds: float) -> str:
+    total = max(0, int(seconds))
+    days, remainder = divmod(total, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, secs = divmod(remainder, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs or not parts:
+        parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
+def _field_input(name: str, value: str | None, input_type: str = "text", placeholder: str = "", secret: bool = False) -> str:
+    rendered_value = "" if secret else (value or "")
+    safe_placeholder = _esc(placeholder)
+    safe_value = _esc(rendered_value)
+    return f'<input name="{_esc(name)}" type="{input_type}" value="{safe_value}" placeholder="{safe_placeholder}" />'
+
+
+def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{_esc(title)}</title>
+  <style>
+    :root {{
+      --bg: #0b1220;
+      --panel: #101a2f;
+      --panel-2: #14203a;
+      --border: rgba(148, 163, 184, 0.18);
+      --text: #e5eefc;
+      --muted: #9fb0ca;
+      --accent: #38bdf8;
+      --accent-2: #22c55e;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --shadow: 0 12px 30px rgba(2, 6, 23, 0.35);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, #12203c, var(--bg) 38%);
+      color: var(--text);
+    }}
+    a {{ color: #7dd3fc; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .wrap {{ max-width: 1300px; margin: 0 auto; padding: 24px; }}
+    .topbar {{
+      display: flex; justify-content: space-between; gap: 16px; align-items: center;
+      margin-bottom: 20px; padding: 18px 20px;
+      background: rgba(16, 26, 47, 0.8); border: 1px solid var(--border);
+      border-radius: 18px; box-shadow: var(--shadow); backdrop-filter: blur(10px);
+    }}
+    .brand h1 {{ margin: 0; font-size: 28px; }}
+    .brand p {{ margin: 6px 0 0; color: var(--muted); }}
+    .chips {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }}
+    .chip {{
+      display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px;
+      border-radius: 999px; background: rgba(59, 130, 246, 0.14);
+      border: 1px solid rgba(59, 130, 246, 0.25); color: var(--text); font-size: 13px;
+    }}
+    .grid {{
+      display: grid; gap: 18px;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    }}
+    .card {{
+      background: rgba(16, 26, 47, 0.92); border: 1px solid var(--border);
+      border-radius: 18px; padding: 18px; box-shadow: var(--shadow);
+    }}
+    .card h2, .card h3 {{ margin: 0 0 12px; }}
+    .subtle {{ color: var(--muted); font-size: 14px; }}
+    .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }}
+    .stat {{
+      padding: 14px; border-radius: 14px; background: rgba(20, 32, 58, 0.92);
+      border: 1px solid var(--border);
+    }}
+    .stat .label {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
+    .stat .value {{ font-size: 24px; font-weight: 700; margin-top: 6px; }}
+    .stat .hint {{ color: var(--muted); font-size: 12px; margin-top: 4px; }}
+    .section-title {{ display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }}
+    .btn, button {{
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 10px 14px; border-radius: 12px; border: 1px solid transparent;
+      background: linear-gradient(180deg, rgba(56, 189, 248, 0.95), rgba(37, 99, 235, 0.95));
+      color: white; font-weight: 600; cursor: pointer; text-decoration: none;
+    }}
+    .btn.secondary {{
+      background: rgba(20, 32, 58, 0.95); border-color: var(--border); color: var(--text);
+    }}
+    .btn.success {{ background: linear-gradient(180deg, rgba(34, 197, 94, 0.95), rgba(21, 128, 61, 0.95)); }}
+    .btn.danger {{ background: linear-gradient(180deg, rgba(248, 113, 113, 0.95), rgba(220, 38, 38, 0.95)); }}
+    .actions {{ display: flex; flex-wrap: wrap; gap: 10px; }}
+    .field-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }}
+    .field {{
+      display: flex; flex-direction: column; gap: 6px; padding: 12px;
+      background: rgba(20, 32, 58, 0.9); border-radius: 14px; border: 1px solid var(--border);
+    }}
+    .field label {{ font-size: 13px; color: var(--muted); }}
+    .field input, .field textarea, .field select {{
+      width: 100%; padding: 11px 12px; border-radius: 12px;
+      background: rgba(8, 15, 28, 0.95); color: var(--text);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+    }}
+    .field textarea {{ min-height: 160px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    .hint {{ color: var(--muted); font-size: 12px; }}
+    table {{ width: 100%; border-collapse: collapse; overflow: hidden; }}
+    th, td {{ padding: 10px 12px; text-align: left; border-bottom: 1px solid rgba(148, 163, 184, 0.12); vertical-align: top; }}
+    th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
+    pre {{
+      margin: 0; padding: 14px; border-radius: 14px; overflow: auto;
+      background: rgba(8, 15, 28, 0.95); border: 1px solid var(--border);
+      max-height: 420px;
+    }}
+    details summary {{ cursor: pointer; color: #7dd3fc; }}
+    .badge {{
+      display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 999px;
+      font-size: 12px; font-weight: 700; background: rgba(148, 163, 184, 0.16);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+    }}
+    .badge.green {{ background: rgba(34, 197, 94, 0.16); border-color: rgba(34, 197, 94, 0.26); }}
+    .badge.red {{ background: rgba(239, 68, 68, 0.16); border-color: rgba(239, 68, 68, 0.26); }}
+    .badge.yellow {{ background: rgba(245, 158, 11, 0.16); border-color: rgba(245, 158, 11, 0.26); }}
+    .muted {{ color: var(--muted); }}
+    .footer {{ margin-top: 20px; color: var(--muted); font-size: 12px; }}
+    {extra_head}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    {body}
+  </div>
+</body>
+</html>
+"""
+
+
+def _env_file_path() -> Path:
+    return Path(os.getenv("MUSICBOT_ENV_FILE", ".env"))
+
+
+def _read_env_file() -> tuple[list[str], dict[str, str], set[str]]:
+    path = _env_file_path()
+    if not path.exists():
+        return [], {}, set()
+
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    values: dict[str, str] = {}
+    keys_in_file: set[str] = set()
+    for line in lines:
+        stripped = line.lstrip()
+        if not line or stripped.startswith("#") or "=" not in line or stripped.startswith("export "):
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        values[key] = value
+        keys_in_file.add(key)
+    return lines, values, keys_in_file
+
+
+def _write_env_file(updates: dict[str, str]) -> None:
+    path = _env_file_path()
+    lines, current, keys_in_file = _read_env_file()
+    current.update(updates)
+
+    if not lines and not path.exists():
+        lines = []
+
+    rewritten: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        stripped = line.lstrip()
+        if line and not stripped.startswith("#") and "=" in line and not stripped.startswith("export "):
+            key, _ = line.split("=", 1)
+            key = key.strip()
+            if key in updates:
+                rewritten.append(f"{key}={updates[key]}")
+                seen.add(key)
+            else:
+                rewritten.append(line)
+        else:
+            rewritten.append(line)
+
+    for key, value in updates.items():
+        if key not in keys_in_file and key not in seen:
+            rewritten.append(f"{key}={value}")
+
+    path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    os.environ.update(updates)
+
+
+def _current_env_snapshot(mask_secrets: bool = True) -> dict[str, str | None]:
+    snapshot: dict[str, str | None] = {}
+    for name, _, _, secret, _ in ENV_EDITABLE_FIELDS:
+        value = os.getenv(name) or None
+        if mask_secrets and secret and value:
+            snapshot[name] = _mask_secret(value)
+        else:
+            snapshot[name] = value
+    return snapshot
+
+
+def _collect_runtime_status(bot: discord.Client) -> dict[str, object]:
+    node = None
+    try:
+        node = wavelink.Pool.get_node()
+    except Exception:
+        node = None
+
+    players = []
+    if node is not None:
+        for player in getattr(node, "players", {}).values():
+            track = getattr(player, "current_track", None)
+            queue_items = []
+            try:
+                queue_items = list(player.queue)[:5]
+            except Exception:
+                queue_items = []
+            players.append(
+                {
+                    "guild_id": getattr(getattr(player, "guild", None), "id", None),
+                    "guild_name": getattr(getattr(player, "guild", None), "name", None),
+                    "channel_name": getattr(getattr(player, "channel", None), "name", None),
+                    "playing": bool(getattr(player, "playing", False)),
+                    "paused": bool(getattr(player, "paused", False)),
+                    "queue_size": len(getattr(player, "queue", []) or []) if hasattr(player, "queue") else 0,
+                    "track": {
+                        "title": getattr(track, "title", None),
+                        "author": display_author(getattr(track, "author", None)) if track else None,
+                        "duration": _format_duration_ms(getattr(track, "length", None)) if track else None,
+                        "position": _format_duration_ms(getattr(player, "position", None)),
+                    } if track else None,
+                    "queue_preview": [getattr(item, "title", str(item)) for item in queue_items],
+                }
+            )
+
+    return {
+        "uptime": _format_uptime(time.time() - _BOOT_TS),
+        "latency_ms": round((bot.latency or 0) * 1000, 1) if getattr(bot, "latency", None) is not None else None,
+        "guild_count": len(getattr(bot, "guilds", []) or []),
+        "user_count": sum(getattr(guild, "member_count", 0) or 0 for guild in getattr(bot, "guilds", []) or []),
+        "extensions": sorted(getattr(bot, "extensions", {}).keys()),
+        "voice_clients": len(getattr(bot, "voice_clients", []) or []),
+        "is_closed": bool(getattr(bot, "is_closed", lambda: False)()),
+        "ws_connected": getattr(bot, "ws", None) is not None,
+        "node_identifier": getattr(node, "identifier", None),
+        "node_players": len(getattr(node, "players", {}) or {}) if node is not None else 0,
+        "players": players,
+    }
+
+
+def _render_status_cards(status: dict[str, object]) -> str:
+    cards = [
+        ("Uptime", status.get("uptime") or "—", "Process age"),
+        ("Latency", f"{status.get('latency_ms') or '—'} ms", "Discord gateway"),
+        ("Guilds", str(status.get("guild_count") or 0), "Connected servers"),
+        ("Users", str(status.get("user_count") or 0), "Cached member count"),
+        ("Players", str(status.get("node_players") or 0), "Active music sessions"),
+        ("Voice", str(status.get("voice_clients") or 0), "Discord voice clients"),
+    ]
+    rendered = []
+    for label, value, hint in cards:
+        rendered.append(
+            f'<div class="stat"><div class="label">{_esc(label)}</div><div class="value">{_esc(value)}</div><div class="hint">{_esc(hint)}</div></div>'
+        )
+    return "".join(rendered)
+
+
+def _render_player_rows(players: list[dict[str, object]]) -> str:
+    if not players:
+        return '<div class="subtle">No active music players.</div>'
+    rows = []
+    for player in players:
+        track = player.get("track") or {}
+        queue_preview = player.get("queue_preview") or []
+        queue_preview_text = "\n".join(queue_preview) or "Queue empty."
+        rows.append(
+            "<tr>"
+            f"<td>{_esc(player.get('guild_name') or player.get('guild_id') or '—')}</td>"
+            f"<td>{_esc(player.get('channel_name') or '—')}</td>"
+            f"<td>{_esc(track.get('title') or '—')}<div class='muted'>{_esc(track.get('author') or '')}</div></td>"
+            f"<td>{_esc(track.get('position') or '—')} / {_esc(track.get('duration') or '—')}</td>"
+            f"<td>{_esc(player.get('queue_size') or 0)}</td>"
+            f"<td>{_esc('playing' if player.get('playing') else 'paused' if player.get('paused') else 'idle')}</td>"
+            f"<td><details><summary>Preview</summary><pre>{_esc(queue_preview_text)}</pre></details></td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr>"
+        "<th>Guild</th><th>Voice channel</th><th>Current track</th><th>Progress</th>"
+        "<th>Queue</th><th>State</th><th>Queue preview</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+
+
+def _render_env_sections() -> str:
+    current = _current_env_snapshot()
+    sections = {
+        "Core": ["DISCORD_TOKEN", "OWNER_ID", "GUILD_ID", "MUSICBOT_DATA_DIR", "MUSICBOT_LOG_DIR"],
+        "Music": ["LAVALINK_HOST", "LAVALINK_PORT", "LAVALINK_PASSWORD", "PLAYER_STATE_DUMP_INTERVAL", "LYRICS_CACHE_TTL_SECONDS", "GENIUS_ACCESS_TOKEN"],
+        "Web admin": ["WEB_ADMIN_ENABLED", "WEB_ADMIN_HOST", "WEB_ADMIN_PORT", "WEB_ADMIN_TOKEN", "WEB_ADMIN_BASIC_USER", "WEB_ADMIN_BASIC_PASSWORD"],
+        "Legacy module env": ["GIVEAWAY_ADMIN_ROLE_ID", "GSAY_ALLOWED_ROLES", "HR_ACCESS", "FAMILY_CALL_CHANNELS", "FAMILY_LOG_CHANNEL", "FAMILY_REMOVE_ROLE_ID", "FAMILY_ADD_ROLE_1_ID", "FAMILY_ADD_ROLE_2_ID", "SIGNUP_MANAGERS", "SIGNUP_ADMINS"],
+    }
+
+    parts: list[str] = []
+    for title, keys in sections.items():
+        fields = []
+        for key in keys:
+            label, input_type, secret, hint = ENV_FIELD_MAP[key]
+            value = current.get(key) or ""
+            display_value = "" if secret else value
+            badge = "configured" if value else "empty"
+            fields.append(
+                "<div class='field'>"
+                f"<label>{_esc(label)} <span class='badge'>{_esc(badge)}</span></label>"
+                f"{_field_input(key, display_value, input_type=input_type, placeholder='leave blank to keep current' if secret else '', secret=secret)}"
+                f"<div class='hint'>{_esc(hint)}</div>"
+                "</div>"
+            )
+        parts.append(f"<div class='card'><div class='section-title'><h3>{_esc(title)}</h3></div><div class='field-grid'>{''.join(fields)}</div></div>")
+    return "".join(parts)
+
+
+def _render_dashboard(bot: discord.Client, token: str, store: JsonStore) -> str:
+    status = _collect_runtime_status(bot)
+    current_env = _current_env_snapshot()
+    web_config = store.load()
+    if not isinstance(web_config, dict):
+        web_config = {}
+
+    players_html = _render_player_rows(status["players"] if isinstance(status.get("players"), list) else [])
+    env_status = [
+        f"<span class='badge green'>Auth: Basic/token</span>",
+        f"<span class='badge'>{_esc(os.getenv('WEB_ADMIN_HOST', '0.0.0.0'))}:{_esc(os.getenv('WEB_ADMIN_PORT', '8080'))}</span>",
+        f"<span class='badge'>{_esc('restart required for .env changes')}</span>",
+    ]
+
+    body = f"""
+    <div class="topbar">
+      <div class="brand">
+        <h1>Musicbot Admin</h1>
+        <p>Dashboard, settings, live state and runtime config.</p>
+      </div>
+      <div class="chips">
+        {''.join(env_status)}
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card" style="grid-column: 1 / -1;">
+        <div class="section-title">
+          <h2>Overview</h2>
+          <div class="actions">
+            <a class="btn secondary" href="/api/status?token={_esc(token)}">API status</a>
+            <a class="btn secondary" href="/config?token={_esc(token)}">Config JSON</a>
+            <a class="btn secondary" href="/logs?n=200&token={_esc(token)}">Logs</a>
+          </div>
+        </div>
+        <div class="stats">{_render_status_cards(status)}</div>
+      </div>
+
+      <div class="card">
+        <div class="section-title"><h2>Actions</h2></div>
+        <div class="actions">
+          <form method="post" action="/sync?token={_esc(token)}"><button type="submit">Sync commands</button></form>
+          <form method="post" action="/reload?token={_esc(token)}"><input name="extension" placeholder="module name" /><button type="submit">Reload</button></form>
+        </div>
+        <p class="subtle">Use module names like <code>giveaway</code>, <code>gsay</code>, <code>signups</code>, <code>joinfamily</code>, <code>ocr_module</code>.</p>
+      </div>
+
+      <div class="card">
+        <div class="section-title"><h2>Quick links</h2></div>
+        <div class="actions">
+          <a class="btn secondary" href="/settings?token={_esc(token)}">Module settings</a>
+          <a class="btn secondary" href="/env?token={_esc(token)}">Environment</a>
+          <a class="btn secondary" href="/logs?n=500&token={_esc(token)}">Last 500 log lines</a>
+        </div>
+        <div class="footer">Environment changes are written to <code>.env</code>; restart is required for most keys.</div>
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1;">
+        <div class="section-title"><h2>Live music sessions</h2></div>
+        {players_html}
+      </div>
+
+      <div class="card">
+        <div class="section-title"><h2>Web config</h2></div>
+        <p class="subtle">Current <code>web_config.json</code> keys: <b>{_esc(", ".join(sorted(web_config.keys())) or "empty")}</b></p>
+        <details>
+          <summary>Preview</summary>
+          <pre>{_esc(json.dumps(web_config, ensure_ascii=False, indent=2))}</pre>
+        </details>
+      </div>
+
+      <div class="card">
+        <div class="section-title"><h2>Environment</h2></div>
+        <div class="field-grid">
+          <div class="field"><label>Discord token</label><input type="password" readonly value="{'set' if current_env.get('DISCORD_TOKEN') else 'empty'}" /></div>
+          <div class="field"><label>Owner</label><input readonly value="{_esc(current_env.get('OWNER_ID') or '')}" /></div>
+          <div class="field"><label>Guild</label><input readonly value="{_esc(current_env.get('GUILD_ID') or '')}" /></div>
+          <div class="field"><label>Lavalink</label><input readonly value="{_esc(current_env.get('LAVALINK_HOST') or '')}:{_esc(current_env.get('LAVALINK_PORT') or '')}" /></div>
+        </div>
+      </div>
+    </div>
+    """
+    return _page("Musicbot Admin", token, body)
 
 
 def _basic_auth_credentials() -> tuple[str, str]:
@@ -73,65 +551,30 @@ async def _index(request: web.Request) -> web.Response:
     _require_token(request)
     bot = request.app["bot"]
     token = request.query.get("token", "")
-
-    guild_count = len(getattr(bot, "guilds", []) or [])
-    users = sum(getattr(guild, "member_count", 0) or 0 for guild in getattr(bot, "guilds", []) or [])
-    ext_names = sorted(getattr(bot, "extensions", {}).keys())
-
-    body = f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Musicbot Admin</title>
-  <style>
-    body {{ font-family: system-ui, sans-serif; margin: 20px; }}
-    code, pre {{ background: #f4f4f4; padding: 2px 4px; border-radius: 4px; }}
-    pre {{ padding: 12px; overflow: auto; }}
-    .row {{ margin: 8px 0; }}
-    input {{ padding: 6px; }}
-    button {{ padding: 6px 10px; }}
-  </style>
-</head>
-<body>
-  <h1>Musicbot Admin</h1>
-  <div class="row">Guilds: <b>{guild_count}</b> | Users: <b>{users}</b></div>
-
-  <h2>Extensions</h2>
-  <pre>{json.dumps(ext_names, ensure_ascii=False, indent=2)}</pre>
-
-  <h3>Reload extension</h3>
-  <form method="post" action="/reload?token={token}">
-    <input name="extension" placeholder="giveaway / signups / ..." />
-    <button type="submit">Reload</button>
-  </form>
-
-  <h2>Settings</h2>
-  <div class="row"><a href="/settings?token={token}">Module settings (web_config.json)</a></div>
-
-  <h2>Sync</h2>
-  <form method="post" action="/sync?token={token}">
-    <button type="submit">Sync commands</button>
-  </form>
-
-  <h2>Logs</h2>
-  <div class="row"><a href="/logs?n=200&token={token}">Last 200 lines</a></div>
-
-  <h2>Config</h2>
-  <div class="row"><a href="/config?token={token}">View config (JSON)</a></div>
-</body>
-</html>
-"""
-    return web.Response(text=body, content_type="text/html")
+    store: JsonStore = request.app["config_store"]
+    return web.Response(text=_render_dashboard(bot, token, store), content_type="text/html")
 
 
 async def _logs(request: web.Request) -> web.Response:
     _require_token(request)
     n = int(request.query.get("n", "200"))
     n = max(10, min(n, 5000))
+    token = request.query.get("token", "")
 
     path = _log_file_path()
     if not path.exists():
-        return web.Response(text=f"Log file not found: {path}\n", content_type="text/plain")
+        body = f"""
+        <div class="topbar">
+          <div class="brand">
+            <h1>Logs</h1>
+            <p>Log file not found: <code>{_esc(path)}</code></p>
+          </div>
+          <div class="chips">
+            <a class="btn secondary" href="/?token={_esc(token)}">Dashboard</a>
+          </div>
+        </div>
+        """
+        return web.Response(text=_page("Logs", body), content_type="text/html")
 
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -139,7 +582,22 @@ async def _logs(request: web.Request) -> web.Response:
         return web.Response(text=f"Failed to read log: {exc}\n", content_type="text/plain", status=500)
 
     tail = "\n".join(lines[-n:]) + "\n"
-    return web.Response(text=tail, content_type="text/plain")
+    body = f"""
+    <div class="topbar">
+      <div class="brand">
+        <h1>Logs</h1>
+        <p>Tail of <code>{_esc(path)}</code></p>
+      </div>
+      <div class="chips">
+        <span class="badge">{_esc(n)} lines</span>
+        <a class="btn secondary" href="/?token={_esc(token)}">Dashboard</a>
+      </div>
+    </div>
+    <div class="card">
+      <pre>{_esc(tail)}</pre>
+    </div>
+    """
+    return web.Response(text=_page("Logs", body), content_type="text/html")
 
 
 async def _config_get(request: web.Request) -> web.Response:
@@ -179,6 +637,82 @@ async def _config_post(request: web.Request) -> web.Response:
     store.save(payload)
     return web.json_response({"ok": True})
 
+
+async def _api_status(request: web.Request) -> web.Response:
+    _require_token(request)
+    bot = request.app["bot"]
+    store: JsonStore = request.app["config_store"]
+    payload = {
+        "runtime": _collect_runtime_status(bot),
+        "web_config": store.load(),
+        "env": _current_env_snapshot(),
+        "log_file": str(_log_file_path()),
+    }
+    return web.json_response(payload, dumps=lambda obj: json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+async def _env_get(request: web.Request) -> web.Response:
+    _require_token(request)
+    token = request.query.get("token", "")
+    current = _current_env_snapshot()
+    body = f"""
+    <div class="topbar">
+      <div class="brand">
+        <h1>Environment</h1>
+        <p>Edit <code>.env</code> values for the running bot. Restart required for most keys.</p>
+      </div>
+      <div class="chips">
+        <span class="badge yellow">Restart required</span>
+        <span class="badge">File: {_esc(_env_file_path())}</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-title">
+        <h2>Editable parameters</h2>
+        <div class="actions">
+          <a class="btn secondary" href="/?token={_esc(token)}">Dashboard</a>
+          <a class="btn secondary" href="/config?token={_esc(token)}">JSON config</a>
+        </div>
+      </div>
+      <form method="post" action="/env/save?token={_esc(token)}">
+        <div class="field-grid">
+          {_render_env_sections()}
+        </div>
+        <div class="actions" style="margin-top: 16px;">
+          <button type="submit" class="btn success">Save .env</button>
+        </div>
+      </form>
+    </div>
+    <div class="card" style="margin-top: 18px;">
+      <div class="section-title"><h2>Current snapshot</h2></div>
+      <details open>
+        <summary>Show current values</summary>
+        <pre>{_esc(json.dumps(current, ensure_ascii=False, indent=2))}</pre>
+      </details>
+    </div>
+    """
+    return web.Response(text=_page("Environment", token, body), content_type="text/html")
+
+
+async def _env_save(request: web.Request) -> web.Response:
+    _require_token(request)
+    token = request.query.get("token", "")
+    current = _current_env_snapshot()
+    data = await request.post()
+    updates: dict[str, str] = {}
+    for key, *_ in ENV_EDITABLE_FIELDS:
+        if key not in data:
+            continue
+        raw_value = str(data.get(key, "")).strip()
+        if not raw_value and key in current and current[key] is not None:
+            continue
+        updates[key] = raw_value
+
+    if updates:
+        _write_env_file(updates)
+
+    raise web.HTTPFound(location=f"/env?token={quote_plus(token)}")
+
 async def _settings_get(request: web.Request) -> web.Response:
     _require_token(request)
     token = request.query.get("token", "")
@@ -217,85 +751,80 @@ async def _settings_get(request: web.Request) -> web.Response:
         else (signups.get("admins") or "")
     )
 
-    body = f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Musicbot Settings</title>
-  <style>
-    body {{ font-family: system-ui, sans-serif; margin: 20px; max-width: 960px; }}
-    input {{ width: 420px; padding: 6px; }}
-    textarea {{ width: 100%; height: 220px; }}
-    .row {{ margin: 10px 0; }}
-    .hint {{ color: #666; font-size: 12px; }}
-    .box {{ background: #f4f4f4; padding: 12px; border-radius: 8px; }}
-  </style>
-</head>
-<body>
-  <h1>Module settings (web_config.json)</h1>
-  <div class="row"><a href="/?token={token}">Back</a></div>
-
-  <div class="box">
-    <div class="row hint">Формат: ID и списки через запятую. После сохранения нажмите “Reload” нужного модуля (или перезапустите бота), чтобы настройки применились.</div>
-  </div>
-
-  <form method="post" action="/settings/save?token={token}">
-    <h2>Giveaway</h2>
-    <div class="row">
-      <label>admin_role_id</label><br />
-      <input name="giveaway_admin_role_id" value="{giveaway.get("admin_role_id","")}" placeholder="1234567890" />
+    body = f"""
+    <div class="topbar">
+      <div class="brand">
+        <h1>Module settings</h1>
+        <p>Edit <code>web_config.json</code> for module-specific overrides.</p>
+      </div>
+      <div class="chips">
+        <span class="badge yellow">Reload extension after save</span>
+        <span class="badge">{_esc(len(cfg))} top-level keys</span>
+      </div>
     </div>
 
-    <h2>GSay</h2>
-    <div class="row">
-      <label>allowed_roles</label><br />
-      <input name="gsay_allowed_roles" value="{gsay_allowed_roles_value}" placeholder="1,2,3" />
-      <div class="hint">Роли, которые могут использовать /gsay (OWNER всегда может).</div>
+    <div class="card">
+      <div class="section-title">
+        <h2>Modules</h2>
+        <div class="actions">
+          <a class="btn secondary" href="/?token={_esc(token)}">Dashboard</a>
+          <a class="btn secondary" href="/env?token={_esc(token)}">Environment</a>
+        </div>
+      </div>
+      <form method="post" action="/settings/save?token={_esc(token)}">
+        <div class="field-grid">
+          <div class="field">
+            <label>Giveaway admin role ID</label>
+            {_field_input("giveaway_admin_role_id", str(giveaway.get("admin_role_id") or ""), placeholder="1234567890")}
+            <div class="hint">Controls giveaway admin checks.</div>
+          </div>
+          <div class="field">
+            <label>GSay allowed roles</label>
+            {_field_input("gsay_allowed_roles", gsay_allowed_roles_value, placeholder="1,2,3")}
+            <div class="hint">Comma-separated role IDs allowed to use /gsay.</div>
+          </div>
+          <div class="field">
+            <label>JoinFamily HR access</label>
+            {_field_input("joinfamily_hr_access", joinfamily_hr_access_value, placeholder="1,2,3")}
+            <div class="hint">Comma-separated role IDs with HR access.</div>
+          </div>
+          <div class="field">
+            <label>JoinFamily log channel</label>
+            {_field_input("joinfamily_log_channel_id", str(joinfamily.get("log_channel_id") or ""), placeholder="1234567890")}
+          </div>
+          <div class="field">
+            <label>JoinFamily remove role</label>
+            {_field_input("joinfamily_remove_role_id", str(joinfamily.get("remove_role_id") or ""), placeholder="1234567890")}
+          </div>
+          <div class="field">
+            <label>JoinFamily add role 1</label>
+            {_field_input("joinfamily_add_role_1_id", str(joinfamily.get("add_role_1_id") or ""), placeholder="1234567890")}
+          </div>
+          <div class="field">
+            <label>JoinFamily add role 2</label>
+            {_field_input("joinfamily_add_role_2_id", str(joinfamily.get("add_role_2_id") or ""), placeholder="1234567890")}
+          </div>
+          <div class="field">
+            <label>Signups managers</label>
+            {_field_input("signups_managers", signups_managers_value, placeholder="1,2,3")}
+          </div>
+          <div class="field">
+            <label>Signups admins</label>
+            {_field_input("signups_admins", signups_admins_value, placeholder="1,2,3")}
+          </div>
+        </div>
+        <div class="actions" style="margin-top: 16px;">
+          <button type="submit" class="btn success">Save module config</button>
+        </div>
+      </form>
     </div>
 
-    <h2>JoinFamily</h2>
-    <div class="row">
-      <label>hr_access</label><br />
-      <input name="joinfamily_hr_access" value="{joinfamily_hr_access_value}" placeholder="1,2,3" />
+    <div class="card" style="margin-top: 18px;">
+      <div class="section-title"><h2>Raw web_config.json</h2></div>
+      <pre>{_esc(json.dumps(cfg, ensure_ascii=False, indent=2))}</pre>
     </div>
-    <div class="row">
-      <label>log_channel_id</label><br />
-      <input name="joinfamily_log_channel_id" value="{joinfamily.get('log_channel_id','')}" placeholder="1234567890" />
-    </div>
-    <div class="row">
-      <label>remove_role_id</label><br />
-      <input name="joinfamily_remove_role_id" value="{joinfamily.get('remove_role_id','')}" placeholder="1234567890" />
-    </div>
-    <div class="row">
-      <label>add_role_1_id</label><br />
-      <input name="joinfamily_add_role_1_id" value="{joinfamily.get('add_role_1_id','')}" placeholder="1234567890" />
-    </div>
-    <div class="row">
-      <label>add_role_2_id</label><br />
-      <input name="joinfamily_add_role_2_id" value="{joinfamily.get('add_role_2_id','')}" placeholder="1234567890" />
-    </div>
-
-    <h2>Signups</h2>
-    <div class="row">
-      <label>managers</label><br />
-      <input name="signups_managers" value="{signups_managers_value}" placeholder="1,2,3" />
-    </div>
-    <div class="row">
-      <label>admins</label><br />
-      <input name="signups_admins" value="{signups_admins_value}" placeholder="1,2,3" />
-    </div>
-
-    <div class="row">
-      <button type="submit">Save</button>
-    </div>
-  </form>
-
-  <h2>Raw web_config.json</h2>
-  <textarea readonly>{json.dumps(cfg, ensure_ascii=False, indent=2)}</textarea>
-</body>
-</html>
-"""
-    return web.Response(text=body, content_type="text/html")
+    """
+    return web.Response(text=_page("Module settings", body), content_type="text/html")
 
 
 async def _settings_save(request: web.Request) -> web.Response:
@@ -397,6 +926,9 @@ async def maybe_start_web_admin(bot: discord.Client) -> web.AppRunner | None:
             web.get("/logs", _logs),
             web.get("/config", _config_get),
             web.post("/config", _config_post),
+            web.get("/api/status", _api_status),
+            web.get("/env", _env_get),
+            web.post("/env/save", _env_save),
             web.get("/settings", _settings_get),
             web.post("/settings/save", _settings_save),
             web.post("/reload", _reload),
