@@ -313,6 +313,9 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     }}
     .status-label {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
     .status-value {{ font-weight: 800; }}
+    .status-value.good {{ color: #86efac; }}
+    .status-value.warn {{ color: #fcd34d; }}
+    .status-value.bad {{ color: #fda4af; }}
     .field-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }}
     .field {{
       display: flex; flex-direction: column; gap: 6px; padding: 12px;
@@ -365,9 +368,57 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
       font-size: 15px;
       line-height: 1.5;
     }}
+    .dashboard-split {{
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      align-items: start;
+    }}
+    .compact-stat {{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 14px;
+      background: rgba(17, 27, 45, 0.82);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+    }}
+    .compact-stat .label {{
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--muted);
+    }}
+    .compact-stat .value {{
+      font-size: 16px;
+      font-weight: 800;
+      line-height: 1.2;
+    }}
+    .compact-stat .hint {{
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }}
+    .bot-status-pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      font-size: 12px;
+      font-weight: 800;
+    }}
+    .bot-status-pill .emoji {{
+      font-size: 14px;
+      line-height: 1;
+    }}
     @media (max-width: 1100px) {{
       .app-shell {{ grid-template-columns: 1fr; }}
       .sidebar {{ position: relative; top: 0; min-height: auto; }}
+      .dashboard-split {{ grid-template-columns: 1fr; }}
     }}
     @media (max-width: 720px) {{
       .topbar {{ flex-direction: column; align-items: flex-start; }}
@@ -394,9 +445,9 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
       <div class="sidebar-card">
         <h4>Bot status</h4>
         <div class="status-grid">
-          <div class="status-row"><span class="status-label">State</span><span class="status-value" data-live-key="bot_status">Offline</span></div>
-          <div class="status-row"><span class="status-label">Bot uptime</span><span class="status-value" data-live="uptime" data-boot-ts="" data-live-key="bot_uptime">—</span></div>
-          <div class="status-row"><span class="status-label">Panel uptime</span><span class="status-value" data-live="uptime" data-boot-ts="{_BOOT_TS}" data-live-key="panel_uptime">—</span></div>
+          <div class="bot-status-pill" data-live-key="bot_status"><span class="emoji">🔴</span><span class="text">Offline</span></div>
+          <div class="status-row"><span class="status-label">Bot uptime</span><span class="status-value" data-live="uptime" data-base-seconds="{_esc(status.get('bot_uptime_seconds') or 0)}" data-live-start="{int(time.time() * 1000)}" data-live-key="bot_uptime">—</span></div>
+          <div class="status-row"><span class="status-label">Panel uptime</span><span class="status-value" data-live="uptime" data-base-seconds="{_esc(status.get('panel_uptime_seconds') or 0)}" data-live-start="{int(time.time() * 1000)}" data-live-key="panel_uptime">—</span></div>
           <div class="status-row"><span class="status-label">Latency</span><span class="status-value" data-live-key="bot_latency_ms">— ms</span></div>
         </div>
       </div>
@@ -421,10 +472,8 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     const token = document.body.dataset.token || "";
     const statusUrl = token ? `/api/status?token=${{encodeURIComponent(token)}}` : "/api/status";
 
-    const formatUptime = (bootTs) => {{
-      const boot = Number(bootTs || 0);
-      if (!boot) return "—";
-      const total = Math.max(0, Math.floor(Date.now() / 1000) - boot);
+    const formatUptime = (totalSeconds) => {{
+      const total = Math.max(0, Math.floor(Number(totalSeconds || 0)));
       const days = Math.floor(total / 86400);
       const hours = Math.floor((total % 86400) / 3600);
       const minutes = Math.floor((total % 3600) / 60);
@@ -441,10 +490,23 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
       document.querySelectorAll(`[data-live-key="${{key}}"]`).forEach((el) => {{
         if (value === undefined || value === null) return;
         if (key === "bot_status") {{
-          const label = String(value || "offline");
-          const text = label.charAt(0).toUpperCase() + label.slice(1);
+          const label = String(value || "offline").toLowerCase();
+          let emoji = "🔴";
+          let text = "Offline";
+          if (label === "online" || label === "ready" || label === "connected") {{
+            emoji = "🟢";
+            text = "Online";
+          }} else if (label === "connecting" || label === "restarting" || label === "starting" || label === "resuming") {{
+            emoji = "🟡";
+            text = "Reconnecting";
+          }}
           if (el.classList.contains("badge")) {{
-            el.textContent = `Bot status: ${{text}}`;
+            el.textContent = `Bot status: ${{emoji}} ${{text}}`;
+          }} else if (el.classList.contains("bot-status-pill")) {{
+            const emojiNode = el.querySelector(".emoji");
+            const textNode = el.querySelector(".text");
+            if (emojiNode) emojiNode.textContent = emoji;
+            if (textNode) textNode.textContent = text;
           }} else {{
             el.textContent = text;
           }}
@@ -465,15 +527,18 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     }};
 
     const tickUptimes = () => {{
+      const now = Date.now();
       document.querySelectorAll('[data-live="uptime"]').forEach((el) => {{
-        const text = formatUptime(el.dataset.bootTs);
-        if (text !== "—") {{
-          if (el.classList.contains("badge")) {{
-            const prefix = el.dataset.liveKey === "panel_uptime" ? "Panel uptime: " : "Bot uptime: ";
-            el.textContent = `${{prefix}}${{text}}`;
-          }} else {{
-            el.textContent = text;
-          }}
+        const baseSeconds = Number(el.dataset.baseSeconds || 0);
+        const startMs = Number(el.dataset.liveStart || 0);
+        if (!baseSeconds) return;
+        const elapsed = Math.floor((now - startMs) / 1000);
+        const text = formatUptime(baseSeconds + Math.max(0, elapsed));
+        if (el.classList.contains("badge")) {{
+          const prefix = el.dataset.liveKey === "panel_uptime" ? "Panel uptime: " : "Bot uptime: ";
+          el.textContent = `${{prefix}}${{text}}`;
+        }} else {{
+          el.textContent = text;
         }}
       }});
     }};
@@ -486,11 +551,17 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
       setByKey("user_count", runtime.user_count ?? 0);
       setByKey("node_players", runtime.node_players ?? 0);
       setByKey("voice_clients", runtime.voice_clients ?? 0);
-      if (runtime.panel_boot_ts) {{
-        document.querySelectorAll('[data-live-key="panel_uptime"]').forEach((el) => el.dataset.bootTs = runtime.panel_boot_ts);
+      if (runtime.panel_uptime_seconds !== undefined && runtime.panel_uptime_seconds !== null) {{
+        document.querySelectorAll('[data-live-key="panel_uptime"]').forEach((el) => {{
+          el.dataset.baseSeconds = runtime.panel_uptime_seconds;
+          el.dataset.liveStart = Date.now();
+        }});
       }}
-      if (runtime.bot_boot_ts) {{
-        document.querySelectorAll('[data-live-key="bot_uptime"]').forEach((el) => el.dataset.bootTs = runtime.bot_boot_ts);
+      if (runtime.bot_uptime_seconds !== undefined && runtime.bot_uptime_seconds !== null) {{
+        document.querySelectorAll('[data-live-key="bot_uptime"]').forEach((el) => {{
+          el.dataset.baseSeconds = runtime.bot_uptime_seconds;
+          el.dataset.liveStart = Date.now();
+        }});
       }}
       tickUptimes();
     }};
@@ -607,6 +678,15 @@ def _refresh_button(href: str) -> str:
 
 def _html_response(body: str) -> web.Response:
     return web.Response(text=body, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+def _status_emoji(status: object) -> str:
+    value = str(status or "").strip().lower()
+    if value in {"online", "ready", "connected"}:
+        return "🟢"
+    if value in {"connecting", "restarting", "starting", "resuming"}:
+        return "🟡"
+    return "🔴"
 
 
 def _selected_guild(bot: discord.Client | None) -> discord.Guild | dict[str, object] | None:
@@ -919,6 +999,8 @@ def _collect_runtime_status(bot: discord.Client | None = None) -> dict[str, obje
             member_count += int(guild.get("member_count") or 0)
 
     return {
+        "panel_uptime_seconds": int(max(0, time.time() - _BOOT_TS)),
+        "bot_uptime_seconds": int(max(0, bot_uptime_seconds)) if bot_uptime_seconds is not None else None,
         "panel_uptime": _format_uptime(time.time() - _BOOT_TS),
         "bot_uptime": _format_uptime(bot_uptime_seconds) if bot_uptime_seconds is not None else "—",
         "panel_boot_ts": _BOOT_TS,
@@ -1040,9 +1122,9 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
         f"<span class='badge green'>Auth: Basic/token</span>",
         f"<span class='badge'>{_esc(os.getenv('WEB_ADMIN_HOST', '0.0.0.0'))}:{_esc(os.getenv('WEB_ADMIN_PORT', '8080'))}</span>",
         f"<span class='badge'>{_esc('restart required for .env changes')}</span>",
-        f"<span class='badge purple' data-live='uptime' data-boot-ts='{_esc(status.get('panel_boot_ts') or _BOOT_TS)}' data-live-key='panel_uptime'>Panel uptime: {_esc(status.get('panel_uptime') or '—')}</span>",
-        f"<span class='badge blue' data-live='uptime' data-boot-ts='{_esc(status.get('bot_boot_ts') or '')}' data-live-key='bot_uptime'>Bot uptime: {_esc(status.get('bot_uptime') or '—')}</span>",
-        f"<span class='badge blue' data-live-key='bot_status'>Bot status: {_esc(str(status.get('bot_status') or 'offline').title())}</span>",
+        f"<span class='badge purple' data-live='uptime' data-base-seconds='{_esc(status.get('panel_uptime_seconds') or 0)}' data-live-start='{int(time.time() * 1000)}' data-live-key='panel_uptime'>Panel uptime: {_esc(status.get('panel_uptime') or '—')}</span>",
+        f"<span class='badge blue' data-live='uptime' data-base-seconds='{_esc(status.get('bot_uptime_seconds') or 0)}' data-live-start='{int(time.time() * 1000)}' data-live-key='bot_uptime'>Bot uptime: {_esc(status.get('bot_uptime') or '—')}</span>",
+        f"<span class='badge blue' data-live-key='bot_status'>Bot status: {_esc(_status_emoji(status.get('bot_status')))} {_esc(str(status.get('bot_status') or 'offline').title())}</span>",
     ]
 
     body = f"""
@@ -1070,33 +1152,35 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
         <div class="stats">{_render_status_cards(status)}</div>
       </div>
 
-      <div class="card">
-        <div class="section-title"><h2>Actions</h2></div>
-        <div class="action-stack">
-          <form method="post" action="/sync?token={_esc(token)}">
-            <button type="submit" class="btn success" style="width: 100%;">Sync commands</button>
-          </form>
-          <form method="post" action="/reload?token={_esc(token)}" class="action-inline">
-            <input name="extension" placeholder="module name" />
-            <button type="submit">Reload</button>
-          </form>
-          <form method="post" action="/restart-bot?token={_esc(token)}">
-            <button type="submit" class="btn danger" style="width: 100%;">Restart bot</button>
-          </form>
+      <div class="dashboard-split">
+        <div class="card">
+          <div class="section-title"><h2>Actions</h2></div>
+          <div class="action-stack">
+            <form method="post" action="/sync?token={_esc(token)}">
+              <button type="submit" class="btn success" style="width: 100%;">Sync commands</button>
+            </form>
+            <form method="post" action="/reload?token={_esc(token)}" class="action-inline">
+              <input name="extension" placeholder="module name" />
+              <button type="submit">Reload</button>
+            </form>
+            <form method="post" action="/restart-bot?token={_esc(token)}">
+              <button type="submit" class="btn danger" style="width: 100%;">Restart bot</button>
+            </form>
+          </div>
+          <p class="subtle">Use module names like <code>giveaway</code>, <code>gsay</code>, <code>signups</code>, <code>joinfamily</code>, <code>ocr_module</code>.</p>
+          <p class="mini">Reload/sync are queued and executed by the bot when it is online; restart uses systemd.</p>
         </div>
-        <p class="subtle">Use module names like <code>giveaway</code>, <code>gsay</code>, <code>signups</code>, <code>joinfamily</code>, <code>ocr_module</code>.</p>
-        <p class="mini">Reload/sync are queued and executed by the bot when it is online; restart uses systemd.</p>
-      </div>
 
-      <div class="card">
-        <div class="section-title"><h2>Quick links</h2></div>
-        <div class="link-grid">
-          <a class="link-card" href="/settings?token={_esc(token)}"><span>Module settings</span><span class="mini">Config overrides</span></a>
-          <a class="link-card" href="/env?token={_esc(token)}"><span>Environment</span><span class="mini">.env editor</span></a>
-          <a class="link-card" href="/music?token={_esc(token)}"><span>Music</span><span class="mini">Live players</span></a>
-          <a class="link-card" href="/logs?n=500&token={_esc(token)}"><span>Logs</span><span class="mini">Recent output</span></a>
+        <div class="card">
+          <div class="section-title"><h2>Quick links</h2></div>
+          <div class="link-grid">
+            <a class="link-card" href="/settings?token={_esc(token)}"><span>Module settings</span><span class="mini">Config overrides</span></a>
+            <a class="link-card" href="/env?token={_esc(token)}"><span>Environment</span><span class="mini">.env editor</span></a>
+            <a class="link-card" href="/music?token={_esc(token)}"><span>Music</span><span class="mini">Live players</span></a>
+            <a class="link-card" href="/logs?n=500&token={_esc(token)}"><span>Logs</span><span class="mini">Recent output</span></a>
+          </div>
+          <div class="footer">Environment changes are written to <code>.env</code>; restart is required for most keys.</div>
         </div>
-        <div class="footer">Environment changes are written to <code>.env</code>; restart is required for most keys.</div>
       </div>
 
       <div class="card" style="grid-column: 1 / -1;">
@@ -1140,7 +1224,7 @@ def _render_music_page(bot: discord.Client | None, token: str) -> str:
       <div class="chips">
         <span class="badge green">{_esc(status.get("node_players") or 0)} players</span>
         <span class="badge">{_esc(status.get("guild_count") or 0)} guilds</span>
-        <span class="badge blue" data-live-key="bot_status">Bot status: {_esc(str(status.get('bot_status') or 'offline').title())}</span>
+        <span class="badge blue" data-live-key="bot_status">Bot status: {_esc(_status_emoji(status.get('bot_status')))} {_esc(str(status.get('bot_status') or 'offline').title())}</span>
         <a class="btn secondary" href="/?token={_esc(token)}">Dashboard</a>
         {_refresh_button(refresh_href)}
         <a class="btn secondary" href="/api/music?token={_esc(token)}">API</a>
