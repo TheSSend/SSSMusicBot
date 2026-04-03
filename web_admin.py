@@ -16,6 +16,7 @@ from aiohttp import web
 from json_store import JsonStore
 from runtime_paths import data_path
 from music_core import display_author
+from web_config import get_int, get_int_list
 
 
 logger = logging.getLogger(__name__)
@@ -421,6 +422,114 @@ def _current_env_snapshot(mask_secrets: bool = True) -> dict[str, str | None]:
         else:
             snapshot[name] = value
     return snapshot
+
+
+def _env_int(raw_value: str | None) -> int | None:
+    raw_value = (raw_value or "").strip()
+    if not raw_value.isdigit():
+        return None
+    return int(raw_value)
+
+
+def _env_int_list(raw_value: str | None) -> list[int]:
+    return [int(part.strip()) for part in (raw_value or "").split(",") if part.strip().isdigit()]
+
+
+def _selected_guild(bot: discord.Client) -> discord.Guild | None:
+    guild_id = _env_int(os.getenv("GUILD_ID"))
+    if guild_id is not None:
+        guild = bot.get_guild(guild_id)
+        if guild is not None:
+            return guild
+    guilds = list(getattr(bot, "guilds", []) or [])
+    if len(guilds) == 1:
+        return guilds[0]
+    if guilds:
+        return guilds[0]
+    return None
+
+
+def _role_label(guild: discord.Guild | None, role_id: int | None) -> str:
+    if not role_id:
+        return "not set"
+    if guild is not None:
+        role = guild.get_role(role_id)
+        if role is not None:
+            return f"{role.name} ({role.id})"
+    return f"Role {role_id}"
+
+
+def _channel_label(guild: discord.Guild | None, channel_id: int | None) -> str:
+    if not channel_id:
+        return "not set"
+    if guild is not None:
+        channel = guild.get_channel(channel_id)
+        if channel is not None:
+            channel_name = getattr(channel, "name", None) or str(channel_id)
+            return f"#{channel_name} ({channel.id})"
+    return f"Channel {channel_id}"
+
+
+def _render_badges(items: list[str]) -> str:
+    if not items:
+        return "<span class='mini'>Not set</span>"
+    return "<div class='sidebar-chip-row'>" + "".join(
+        f"<span class='badge'>{_esc(item)}</span>" for item in items
+    ) + "</div>"
+
+
+def _module_config_snapshot(bot: discord.Client, cfg: dict[str, object]) -> dict[str, object]:
+    guild = _selected_guild(bot)
+
+    giveaway_admin_role_id = get_int(cfg, ["giveaway", "admin_role_id"], default=_env_int(os.getenv("GIVEAWAY_ADMIN_ROLE_ID")))
+    gsay_allowed_roles = get_int_list(cfg, ["gsay", "allowed_roles"], default=None)
+    if gsay_allowed_roles is None:
+        gsay_allowed_roles = _env_int_list(os.getenv("GSAY_ALLOWED_ROLES"))
+
+    joinfamily_hr_access = get_int_list(cfg, ["joinfamily", "hr_access"], default=None)
+    if joinfamily_hr_access is None:
+        joinfamily_hr_access = _env_int_list(os.getenv("HR_ACCESS"))
+
+    joinfamily_log_channel_id = get_int(
+        cfg,
+        ["joinfamily", "log_channel_id"],
+        default=_env_int(os.getenv("FAMILY_LOG_CHANNEL")),
+    )
+    joinfamily_remove_role_id = get_int(
+        cfg,
+        ["joinfamily", "remove_role_id"],
+        default=_env_int(os.getenv("FAMILY_REMOVE_ROLE_ID")),
+    )
+    joinfamily_add_role_1_id = get_int(
+        cfg,
+        ["joinfamily", "add_role_1_id"],
+        default=_env_int(os.getenv("FAMILY_ADD_ROLE_1_ID")),
+    )
+    joinfamily_add_role_2_id = get_int(
+        cfg,
+        ["joinfamily", "add_role_2_id"],
+        default=_env_int(os.getenv("FAMILY_ADD_ROLE_2_ID")),
+    )
+
+    signups_managers = get_int_list(cfg, ["signups", "managers"], default=None)
+    if signups_managers is None:
+        signups_managers = _env_int_list(os.getenv("SIGNUP_MANAGERS"))
+    signups_admins = get_int_list(cfg, ["signups", "admins"], default=None)
+    if signups_admins is None:
+        signups_admins = _env_int_list(os.getenv("SIGNUP_ADMINS"))
+
+    return {
+        "guild": guild,
+        "giveaway_admin_role": giveaway_admin_role_id,
+        "gsay_allowed_roles": gsay_allowed_roles,
+        "joinfamily_hr_access": joinfamily_hr_access,
+        "joinfamily_log_channel": joinfamily_log_channel_id,
+        "joinfamily_remove_role": joinfamily_remove_role_id,
+        "joinfamily_add_role_1": joinfamily_add_role_1_id,
+        "joinfamily_add_role_2": joinfamily_add_role_2_id,
+        "signups_managers": signups_managers,
+        "signups_admins": signups_admins,
+    }
 
 
 def _collect_runtime_status(bot: discord.Client) -> dict[str, object]:
@@ -950,6 +1059,7 @@ async def _env_save(request: web.Request) -> web.Response:
 async def _settings_get(request: web.Request) -> web.Response:
     _require_token(request)
     token = request.query.get("token", "")
+    bot = request.app["bot"]
 
     store: JsonStore = request.app["config_store"]
     cfg = store.load()
@@ -961,29 +1071,98 @@ async def _settings_get(request: web.Request) -> web.Response:
     joinfamily = cfg.get("joinfamily", {}) if isinstance(cfg.get("joinfamily"), dict) else {}
     signups = cfg.get("signups", {}) if isinstance(cfg.get("signups"), dict) else {}
 
-    gsay_allowed_roles_value = (
-        ",".join(str(x) for x in (gsay.get("allowed_roles") or []))
-        if isinstance(gsay.get("allowed_roles"), list)
-        else (gsay.get("allowed_roles") or "")
-    )
+    snapshot = _module_config_snapshot(bot, cfg)
+    guild = snapshot.get("guild") if isinstance(snapshot.get("guild"), discord.Guild) else None
 
-    joinfamily_hr_access_value = (
-        ",".join(str(x) for x in (joinfamily.get("hr_access") or []))
-        if isinstance(joinfamily.get("hr_access"), list)
-        else (joinfamily.get("hr_access") or "")
-    )
+    giveaway_admin_role_id = snapshot.get("giveaway_admin_role")
+    gsay_allowed_roles = snapshot.get("gsay_allowed_roles") if isinstance(snapshot.get("gsay_allowed_roles"), list) else []
+    joinfamily_hr_access = snapshot.get("joinfamily_hr_access") if isinstance(snapshot.get("joinfamily_hr_access"), list) else []
+    joinfamily_log_channel_id = snapshot.get("joinfamily_log_channel")
+    joinfamily_remove_role_id = snapshot.get("joinfamily_remove_role")
+    joinfamily_add_role_1_id = snapshot.get("joinfamily_add_role_1")
+    joinfamily_add_role_2_id = snapshot.get("joinfamily_add_role_2")
+    signups_managers = snapshot.get("signups_managers") if isinstance(snapshot.get("signups_managers"), list) else []
+    signups_admins = snapshot.get("signups_admins") if isinstance(snapshot.get("signups_admins"), list) else []
 
-    signups_managers_value = (
-        ",".join(str(x) for x in (signups.get("managers") or []))
-        if isinstance(signups.get("managers"), list)
-        else (signups.get("managers") or "")
-    )
+    giveaway_admin_role_value = "" if giveaway_admin_role_id is None else str(giveaway_admin_role_id)
+    gsay_allowed_roles_value = ",".join(str(x) for x in gsay_allowed_roles)
+    joinfamily_hr_access_value = ",".join(str(x) for x in joinfamily_hr_access)
+    joinfamily_log_channel_value = "" if joinfamily_log_channel_id is None else str(joinfamily_log_channel_id)
+    joinfamily_remove_role_value = "" if joinfamily_remove_role_id is None else str(joinfamily_remove_role_id)
+    joinfamily_add_role_1_value = "" if joinfamily_add_role_1_id is None else str(joinfamily_add_role_1_id)
+    joinfamily_add_role_2_value = "" if joinfamily_add_role_2_id is None else str(joinfamily_add_role_2_id)
+    signups_managers_value = ",".join(str(x) for x in signups_managers)
+    signups_admins_value = ",".join(str(x) for x in signups_admins)
 
-    signups_admins_value = (
-        ",".join(str(x) for x in (signups.get("admins") or []))
-        if isinstance(signups.get("admins"), list)
-        else (signups.get("admins") or "")
-    )
+    cached_roles = len(getattr(guild, "roles", []) or []) if guild is not None else 0
+    cached_channels = len(getattr(guild, "channels", []) or []) if guild is not None else 0
+    cached_members = getattr(guild, "member_count", None) if guild is not None else None
+
+    resolved_cards = [
+        ("Guild", guild.name if guild else "No guild cache", f"ID: {guild.id}" if guild else "Set GUILD_ID or join one guild"),
+        ("Roles", str(cached_roles), "Cached in Discord state"),
+        ("Channels", str(cached_channels), "Cached in Discord state"),
+        ("Members", str(cached_members or 0), "Member count from guild cache"),
+    ]
+
+    def render_value_list(ids: list[int], resolver) -> str:
+        if not ids:
+            return "<span class='mini'>Not set</span>"
+        chips = [f"<span class='badge'>{_esc(resolver(guild, item_id))}</span>" for item_id in ids]
+        return "<div class='sidebar-chip-row'>" + "".join(chips) + "</div>"
+
+    resolved_summary = f"""
+    <div class="card">
+      <div class="section-title">
+        <h2>Resolved values</h2>
+        <div class="actions">
+          <span class="badge green">Effective config</span>
+          <span class="badge">{_esc("web_config + .env fallback")}</span>
+        </div>
+      </div>
+      <div class="stats">
+        {''.join(f'<div class="stat"><div class="label">{_esc(label)}</div><div class="value">{_esc(value)}</div><div class="hint">{_esc(hint)}</div></div>' for label, value, hint in resolved_cards)}
+      </div>
+      <div class="field-grid" style="margin-top: 14px;">
+        <div class="field">
+          <label>Giveaway admin role</label>
+          {_render_badges([_role_label(guild, giveaway_admin_role_id)])}
+        </div>
+        <div class="field">
+          <label>GSay allowed roles</label>
+          {render_value_list(gsay_allowed_roles, _role_label)}
+        </div>
+        <div class="field">
+          <label>JoinFamily HR access</label>
+          {render_value_list(joinfamily_hr_access, _role_label)}
+        </div>
+        <div class="field">
+          <label>JoinFamily log channel</label>
+          {_render_badges([_channel_label(guild, joinfamily_log_channel_id)])}
+        </div>
+        <div class="field">
+          <label>JoinFamily remove role</label>
+          {_render_badges([_role_label(guild, joinfamily_remove_role_id)])}
+        </div>
+        <div class="field">
+          <label>JoinFamily add role 1</label>
+          {_render_badges([_role_label(guild, joinfamily_add_role_1_id)])}
+        </div>
+        <div class="field">
+          <label>JoinFamily add role 2</label>
+          {_render_badges([_role_label(guild, joinfamily_add_role_2_id)])}
+        </div>
+        <div class="field">
+          <label>Signups managers</label>
+          {render_value_list(signups_managers, _role_label)}
+        </div>
+        <div class="field">
+          <label>Signups admins</label>
+          {render_value_list(signups_admins, _role_label)}
+        </div>
+      </div>
+    </div>
+    """
 
     body = f"""
     <div class="topbar">
@@ -1009,42 +1188,51 @@ async def _settings_get(request: web.Request) -> web.Response:
         <div class="field-grid">
           <div class="field">
             <label>Giveaway admin role ID</label>
-            {_field_input("giveaway_admin_role_id", str(giveaway.get("admin_role_id") or ""), placeholder="1234567890")}
+            {_field_input("giveaway_admin_role_id", giveaway_admin_role_value, placeholder="1234567890")}
             <div class="hint">Controls giveaway admin checks.</div>
+            <div class="mini">Current: {_esc(_role_label(guild, giveaway_admin_role_id))}</div>
           </div>
           <div class="field">
             <label>GSay allowed roles</label>
             {_field_input("gsay_allowed_roles", gsay_allowed_roles_value, placeholder="1,2,3")}
             <div class="hint">Comma-separated role IDs allowed to use /gsay.</div>
+            <div class="mini">Current: {render_value_list(gsay_allowed_roles, _role_label)}</div>
           </div>
           <div class="field">
             <label>JoinFamily HR access</label>
             {_field_input("joinfamily_hr_access", joinfamily_hr_access_value, placeholder="1,2,3")}
             <div class="hint">Comma-separated role IDs with HR access.</div>
+            <div class="mini">Current: {render_value_list(joinfamily_hr_access, _role_label)}</div>
           </div>
           <div class="field">
             <label>JoinFamily log channel</label>
-            {_field_input("joinfamily_log_channel_id", str(joinfamily.get("log_channel_id") or ""), placeholder="1234567890")}
+            {_field_input("joinfamily_log_channel_id", joinfamily_log_channel_value, placeholder="1234567890")}
+            <div class="mini">Current: {_esc(_channel_label(guild, joinfamily_log_channel_id))}</div>
           </div>
           <div class="field">
             <label>JoinFamily remove role</label>
-            {_field_input("joinfamily_remove_role_id", str(joinfamily.get("remove_role_id") or ""), placeholder="1234567890")}
+            {_field_input("joinfamily_remove_role_id", joinfamily_remove_role_value, placeholder="1234567890")}
+            <div class="mini">Current: {_esc(_role_label(guild, joinfamily_remove_role_id))}</div>
           </div>
           <div class="field">
             <label>JoinFamily add role 1</label>
-            {_field_input("joinfamily_add_role_1_id", str(joinfamily.get("add_role_1_id") or ""), placeholder="1234567890")}
+            {_field_input("joinfamily_add_role_1_id", joinfamily_add_role_1_value, placeholder="1234567890")}
+            <div class="mini">Current: {_esc(_role_label(guild, joinfamily_add_role_1_id))}</div>
           </div>
           <div class="field">
             <label>JoinFamily add role 2</label>
-            {_field_input("joinfamily_add_role_2_id", str(joinfamily.get("add_role_2_id") or ""), placeholder="1234567890")}
+            {_field_input("joinfamily_add_role_2_id", joinfamily_add_role_2_value, placeholder="1234567890")}
+            <div class="mini">Current: {_esc(_role_label(guild, joinfamily_add_role_2_id))}</div>
           </div>
           <div class="field">
             <label>Signups managers</label>
             {_field_input("signups_managers", signups_managers_value, placeholder="1,2,3")}
+            <div class="mini">Current: {render_value_list(signups_managers, _role_label)}</div>
           </div>
           <div class="field">
             <label>Signups admins</label>
             {_field_input("signups_admins", signups_admins_value, placeholder="1,2,3")}
+            <div class="mini">Current: {render_value_list(signups_admins, _role_label)}</div>
           </div>
         </div>
         <div class="actions" style="margin-top: 16px;">
@@ -1052,6 +1240,8 @@ async def _settings_get(request: web.Request) -> web.Response:
         </div>
       </form>
     </div>
+
+    {resolved_summary}
 
     <div class="card" style="margin-top: 18px;">
       <div class="section-title"><h2>Raw web_config.json</h2></div>
