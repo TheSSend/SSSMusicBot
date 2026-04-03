@@ -18,6 +18,9 @@ bot-runtime.log
 family_applications.json
 giveaways.json
 signups.json
+player_state.json
+panel_state.json
+admin_commands.json
 
 lavalink/logs/
 lavalink/plugins/

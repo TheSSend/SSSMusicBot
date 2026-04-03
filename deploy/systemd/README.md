@@ -9,6 +9,7 @@ These files are templates for Ubuntu 24.
 - Virtualenv: `/opt/sssmusicbot/.venv`
 - Bot logs: `/var/log/sssmusicbot`
 - Bot runtime data: `/var/lib/sssmusicbot`
+- Web panel: `/opt/sssmusicbot/web_admin.py`
 
 ## Install
 
@@ -26,6 +27,7 @@ sudo useradd -r -m -d /opt/sssmusicbot -s /bin/bash musicbot
 ```bash
 sudo cp deploy/systemd/lavalink.service /etc/systemd/system/
 sudo cp deploy/systemd/musicbot.service /etc/systemd/system/
+sudo cp deploy/systemd/musicbot-web.service /etc/systemd/system/
 ```
 
 6. Reload and enable:
@@ -34,6 +36,7 @@ sudo cp deploy/systemd/musicbot.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now lavalink.service
 sudo systemctl enable --now musicbot.service
+sudo systemctl enable --now musicbot-web.service
 ```
 
 ## Logs
@@ -41,6 +44,21 @@ sudo systemctl enable --now musicbot.service
 ```bash
 sudo journalctl -u lavalink -f
 sudo journalctl -u musicbot -f
+sudo journalctl -u musicbot-web -f
+```
+
+## Restart button permissions
+
+If you want the web panel to restart the bot, allow the service user to restart only `musicbot.service`:
+
+```bash
+sudo visudo
+```
+
+Add a line like:
+
+```text
+musicbot ALL=NOPASSWD: /bin/systemctl restart musicbot.service
 ```
 
 Adjust `User`, `Group`, and `WorkingDirectory` in the unit files if you deploy to a different path.

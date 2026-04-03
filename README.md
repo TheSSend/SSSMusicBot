@@ -161,9 +161,9 @@ python -m pip install -U --index-url https://www.paddlepaddle.org.cn/packages/st
 - Do not commit `lavalink/Lavalink.jar` or downloaded plugins
 - Rotate your Discord token before publishing if it has ever been exposed
 
-## Web Admin Panel (optional)
+## Web Admin Panel
 
-The bot can start a small protected web panel for viewing logs/config and reloading modules.
+The admin panel now runs as a separate process (`musicbot-web.service`) so it stays online when the bot restarts.
 
 Enable in `.env`:
 
@@ -172,15 +172,30 @@ Enable in `.env`:
 - `WEB_ADMIN_PORT=8080`
 - `WEB_ADMIN_TOKEN=...` (required)
 - `WEB_ADMIN_BASIC_USER=...` / `WEB_ADMIN_BASIC_PASSWORD=...` for browser login prompt
+- `WEB_ADMIN_RESTART_COMMAND=sudo -n /bin/systemctl restart musicbot.service` (optional, used by the Restart button)
 
 Open in browser:
 
 - `http://<server-ip>:8080/?token=<WEB_ADMIN_TOKEN>`
 - Or, if Basic Auth is configured, open `http://<server-ip>:8080/` and sign in via the browser prompt
 
+The panel uses shared runtime files:
+
+- `player_state.json` for music resume/queue state
+- `panel_state.json` for Discord guild/role/channel name snapshots
+- `admin_commands.json` for queued reload/sync actions
+- `web_config.json` for module overrides
+
+Deployment:
+
+- bot service: `musicbot.service`
+- panel service: `musicbot-web.service`
+- panel start command: `python web_admin.py` or the `musicbot-web.service` unit
+
 Security notes:
 
 - Use a strong token and keep it private.
+- If you expose restart functionality, lock down `WEB_ADMIN_RESTART_COMMAND` with sudoers so it can only restart `musicbot.service`.
 - Prefer running behind a reverse proxy with HTTPS if exposing to the internet.
 
 ## Lyrics source fallback

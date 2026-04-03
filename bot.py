@@ -24,7 +24,6 @@ from music_core import (
 from edit_guard import safe_message_edit, start_cleanup_task
 from json_store import JsonStore
 from runtime_paths import data_path
-from web_admin import maybe_start_web_admin
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +39,15 @@ _music_update_task: asyncio.Task | None = None
 _idle_disconnect_tasks: dict[int, asyncio.Task] = {}
 _last_state_dump: dict[int, float] = {}
 STATE_DUMP_INTERVAL_SECONDS = int(os.getenv("PLAYER_STATE_DUMP_INTERVAL", "15"))
-_web_admin_runner = None
 _resume_lock = asyncio.Lock()
 _resume_task: asyncio.Task | None = None
+_admin_queue_task: asyncio.Task | None = None
 _shutting_down = False
 
 # Store for player resumes
 state_store = JsonStore(data_path("player_state.json"))
+panel_state_store = JsonStore(data_path("panel_state.json"))
+admin_command_store = JsonStore(data_path("admin_commands.json"))
 
 
 def _clear_player_state(guild_id: int) -> None:
@@ -55,6 +56,145 @@ def _clear_player_state(guild_id: int) -> None:
         return state
 
     state_store.update(_mutate)
+
+
+def _selected_guild_id() -> int | None:
+    guild_id = os.getenv("GUILD_ID", "").strip()
+    if guild_id.isdigit():
+        return int(guild_id)
+    return None
+
+
+def dump_panel_state() -> None:
+    def _serialize_guild(guild: discord.Guild) -> dict[str, object]:
+        roles = [
+            {
+                "id": role.id,
+                "name": role.name,
+                "position": role.position,
+                "managed": role.managed,
+            }
+            for role in getattr(guild, "roles", []) or []
+        ]
+        channels = [
+            {
+                "id": channel.id,
+                "name": getattr(channel, "name", None),
+                "type": str(getattr(channel, "type", None)),
+            }
+            for channel in getattr(guild, "channels", []) or []
+        ]
+        return {
+            "id": guild.id,
+            "name": guild.name,
+            "member_count": getattr(guild, "member_count", 0) or 0,
+            "roles": roles,
+            "channels": channels,
+        }
+
+    guilds = [_serialize_guild(guild) for guild in bot.guilds]
+    selected_id = _selected_guild_id()
+    selected_guild = None
+    if selected_id is not None:
+        selected = bot.get_guild(selected_id)
+        if selected is not None:
+            selected_guild = _serialize_guild(selected)
+    if selected_guild is None and guilds:
+        selected_guild = guilds[0]
+
+    def _mutate(state: dict) -> dict:
+        state["updated_at"] = time.time()
+        state["selected_guild"] = selected_guild
+        state["guilds"] = guilds
+        return state
+
+    panel_state_store.update(_mutate)
+
+
+def enqueue_admin_command(command_type: str, payload: dict[str, object] | None = None) -> None:
+    payload = payload or {}
+    command = {
+        "id": f"{time.time_ns()}",
+        "type": command_type,
+        "payload": payload,
+        "status": "pending",
+        "created_at": time.time(),
+    }
+
+    def _mutate(state: dict) -> dict:
+        pending = state.get("pending")
+        if not isinstance(pending, list):
+            pending = []
+        pending.append(command)
+        state["pending"] = pending
+        history = state.get("history")
+        if not isinstance(history, list):
+            history = []
+        state["history"] = history[-50:]
+        return state
+
+    admin_command_store.update(_mutate)
+
+
+async def process_admin_commands_once() -> None:
+    state = admin_command_store.load()
+    pending = state.get("pending")
+    if not isinstance(pending, list) or not pending:
+        return
+
+    command = pending.pop(0)
+    command_type = command.get("type")
+    payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
+    result = {
+        "id": command.get("id"),
+        "type": command_type,
+        "payload": payload,
+        "created_at": command.get("created_at"),
+        "processed_at": time.time(),
+        "status": "done",
+    }
+
+    try:
+        if command_type == "reload_extension":
+            extension = str(payload.get("extension") or "").strip()
+            if not extension:
+                raise ValueError("Missing extension name")
+            await bot.reload_extension(extension)
+        elif command_type == "sync_commands":
+            guild_id = str(payload.get("guild_id") or "").strip()
+            if guild_id.isdigit():
+                synced = await bot.tree.sync(guild=discord.Object(id=int(guild_id)))
+            else:
+                synced = await bot.tree.sync()
+            result["synced"] = [getattr(cmd, "name", "?") for cmd in (synced or [])]
+        else:
+            result["status"] = "ignored"
+            result["error"] = f"Unknown command type: {command_type}"
+    except Exception as exc:
+        logger.exception("Admin command failed: %s", command_type)
+        result["status"] = "failed"
+        result["error"] = str(exc)
+
+    def _mutate(state: dict) -> dict:
+        state["pending"] = pending
+        history = state.get("history")
+        if not isinstance(history, list):
+            history = []
+        history.append(result)
+        state["history"] = history[-50:]
+        return state
+
+    admin_command_store.update(_mutate)
+
+
+async def admin_command_watcher() -> None:
+    while not _shutting_down:
+        try:
+            if bot.is_ready():
+                await process_admin_commands_once()
+        except Exception:
+            logger.exception("Admin command watcher failed")
+        await asyncio.sleep(2)
 
 
 def _mark_shutting_down(*_args) -> None:
@@ -460,17 +600,15 @@ async def setup_hook():
     global _music_update_task
     if _music_update_task is None or _music_update_task.done():
         _music_update_task = asyncio.create_task(music_controls_updater())
-
-    global _web_admin_runner
-    if _web_admin_runner is None:
-        try:
-            _web_admin_runner = await maybe_start_web_admin(bot)
-        except Exception:
-            logger.exception("Failed to start web admin")
+    dump_panel_state()
 
     global _resume_task
     if _resume_task is None or _resume_task.done():
         _resume_task = asyncio.create_task(resume_saved_players_when_ready())
+
+    global _admin_queue_task
+    if _admin_queue_task is None or _admin_queue_task.done():
+        _admin_queue_task = asyncio.create_task(admin_command_watcher())
 
 bot.setup_hook = setup_hook
 
@@ -897,7 +1035,43 @@ async def sync(interaction: discord.Interaction):
 @bot.event
 async def on_ready():
     logger.info("Бот %s готов", bot.user)
+    dump_panel_state()
     await update_presence()
+
+
+@bot.event
+async def on_guild_available(guild):
+    dump_panel_state()
+
+
+@bot.event
+async def on_guild_role_create(role):
+    dump_panel_state()
+
+
+@bot.event
+async def on_guild_role_delete(role):
+    dump_panel_state()
+
+
+@bot.event
+async def on_guild_role_update(before, after):
+    dump_panel_state()
+
+
+@bot.event
+async def on_guild_channel_create(channel):
+    dump_panel_state()
+
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    dump_panel_state()
+
+
+@bot.event
+async def on_guild_channel_update(before, after):
+    dump_panel_state()
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):

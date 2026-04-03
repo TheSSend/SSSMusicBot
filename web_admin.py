@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 import time
@@ -5,22 +6,25 @@ import html as html_lib
 import logging
 import base64
 import binascii
+import shlex
 import subprocess
 from pathlib import Path
 from urllib.parse import quote_plus
 
 import discord
-import wavelink
 from aiohttp import web
+from dotenv import load_dotenv
 
 from json_store import JsonStore
 from runtime_paths import data_path
-from music_core import display_author
 from web_config import get_int, get_int_list
 
 
 logger = logging.getLogger(__name__)
 _BOOT_TS = time.time()
+load_dotenv()
+_panel_state_store = JsonStore(data_path("panel_state.json"))
+_admin_queue_store = JsonStore(data_path("admin_commands.json"))
 
 ENV_EDITABLE_FIELDS: list[tuple[str, str, str, bool, str]] = [
     ("DISCORD_TOKEN", "Discord token", "password", True, "Required. Restart required after change."),
@@ -465,57 +469,117 @@ def _env_int_list(raw_value: str | None) -> list[int]:
     return [int(part.strip()) for part in (raw_value or "").split(",") if part.strip().isdigit()]
 
 
-def _selected_guild(bot: discord.Client) -> discord.Guild | None:
+def _load_panel_state() -> dict[str, object]:
+    try:
+        value = _panel_state_store.load()
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        logger.exception("Failed to load panel_state.json")
+        return {}
+
+
+def _selected_guild(bot: discord.Client | None) -> discord.Guild | dict[str, object] | None:
     guild_id = _env_int(os.getenv("GUILD_ID"))
-    if guild_id is not None:
-        guild = bot.get_guild(guild_id)
-        if guild is not None:
-            return guild
-    guilds = list(getattr(bot, "guilds", []) or [])
-    if len(guilds) == 1:
-        return guilds[0]
-    if guilds:
-        return guilds[0]
+    if bot is not None:
+        if guild_id is not None:
+            guild = bot.get_guild(guild_id)
+            if guild is not None:
+                return guild
+        guilds = list(getattr(bot, "guilds", []) or [])
+        if len(guilds) == 1:
+            return guilds[0]
+        if guilds:
+            return guilds[0]
+        return None
+
+    snapshot = _load_panel_state()
+    selected = snapshot.get("selected_guild")
+    if isinstance(selected, dict):
+        return selected
+    guilds = snapshot.get("guilds")
+    if isinstance(guilds, list) and guilds:
+        first = guilds[0]
+        return first if isinstance(first, dict) else None
     return None
 
 
-def _role_label(guild: discord.Guild | None, role_id: int | None) -> str:
+def _resolve_snapshot_collection(guild: dict[str, object] | None, key: str) -> list[dict[str, object]]:
+    if not isinstance(guild, dict):
+        return []
+    values = guild.get(key)
+    if isinstance(values, list):
+        return [item for item in values if isinstance(item, dict)]
+    return []
+
+
+def _find_snapshot_guild(guild_id: int | None) -> dict[str, object] | None:
+    if not guild_id:
+        return None
+    snapshot = _load_panel_state()
+    guilds = snapshot.get("guilds")
+    if not isinstance(guilds, list):
+        return None
+    for guild in guilds:
+        if isinstance(guild, dict) and int(guild.get("id") or 0) == guild_id:
+            return guild
+    return None
+
+
+def _role_label(guild: discord.Guild | dict[str, object] | None, role_id: int | None) -> str:
     if not role_id:
         return "not set"
     if guild is not None:
-        role = guild.get_role(role_id)
-        if role is not None:
-            return f"{role.name} ({role.id})"
+        if isinstance(guild, discord.Guild):
+            role = guild.get_role(role_id)
+            if role is not None:
+                return f"{role.name} ({role.id})"
+        else:
+            for role in _resolve_snapshot_collection(guild, "roles"):
+                if int(role.get("id") or 0) == role_id:
+                    name = role.get("name") or f"Role {role_id}"
+                    return f"{name} ({role_id})"
     return f"Role {role_id}"
 
 
-def _channel_label(guild: discord.Guild | None, channel_id: int | None) -> str:
+def _channel_label(guild: discord.Guild | dict[str, object] | None, channel_id: int | None) -> str:
     if not channel_id:
         return "not set"
     if guild is not None:
-        channel = guild.get_channel(channel_id)
-        if channel is not None:
-            channel_name = getattr(channel, "name", None) or str(channel_id)
-            return f"#{channel_name} ({channel.id})"
+        if isinstance(guild, discord.Guild):
+            channel = guild.get_channel(channel_id)
+            if channel is not None:
+                channel_name = getattr(channel, "name", None) or str(channel_id)
+                return f"#{channel_name} ({channel.id})"
+        else:
+            for channel in _resolve_snapshot_collection(guild, "channels"):
+                if int(channel.get("id") or 0) == channel_id:
+                    channel_name = channel.get("name") or f"channel-{channel_id}"
+                    return f"#{channel_name} ({channel_id})"
     return f"Channel {channel_id}"
 
 
-def _guild_label(bot: discord.Client, guild_id: int | None) -> str:
+def _guild_label(bot: discord.Client | None, guild_id: int | None) -> str:
     if not guild_id:
         return "not set"
-    guild = bot.get_guild(guild_id)
-    if guild is not None:
-        return f"{guild.name} ({guild.id})"
+    if bot is not None:
+        guild = bot.get_guild(guild_id)
+        if guild is not None:
+            return f"{guild.name} ({guild.id})"
+    snapshot = _load_panel_state()
+    for guild in snapshot.get("guilds", []) if isinstance(snapshot.get("guilds"), list) else []:
+        if isinstance(guild, dict) and int(guild.get("id") or 0) == guild_id:
+            return f"{guild.get('name') or 'Guild'} ({guild_id})"
     return f"Guild {guild_id}"
 
 
-def _user_label(bot: discord.Client, user_id: int | None) -> str:
+def _user_label(bot: discord.Client | None, user_id: int | None) -> str:
     if not user_id:
         return "not set"
-    user = bot.get_user(user_id)
-    if user is not None:
-        username = getattr(user, "global_name", None) or getattr(user, "display_name", None) or getattr(user, "name", None) or str(user_id)
-        return f"{username} ({user.id})"
+    if bot is not None:
+        user = bot.get_user(user_id)
+        if user is not None:
+            username = getattr(user, "global_name", None) or getattr(user, "display_name", None) or getattr(user, "name", None) or str(user_id)
+            return f"{username} ({user.id})"
     return f"User {user_id}"
 
 
@@ -570,7 +634,7 @@ def _render_badges(items: list[str]) -> str:
     ) + "</div>"
 
 
-def _module_config_snapshot(bot: discord.Client, cfg: dict[str, object]) -> dict[str, object]:
+def _module_config_snapshot(bot: discord.Client | None, cfg: dict[str, object]) -> dict[str, object]:
     guild = _selected_guild(bot)
 
     giveaway_admin_role_id = get_int(cfg, ["giveaway", "admin_role_id"], default=_env_int(os.getenv("GIVEAWAY_ADMIN_ROLE_ID")))
@@ -624,70 +688,78 @@ def _module_config_snapshot(bot: discord.Client, cfg: dict[str, object]) -> dict
     }
 
 
-def _collect_runtime_status(bot: discord.Client) -> dict[str, object]:
-    node = None
+def _load_player_state() -> dict[str, object]:
     try:
-        node = wavelink.Pool.get_node()
+        value = JsonStore(data_path("player_state.json")).load()
+        return value if isinstance(value, dict) else {}
     except Exception:
-        node = None
+        logger.exception("Failed to load player_state.json")
+        return {}
 
-    players = []
-    if node is not None:
-        for player in getattr(node, "players", {}).values():
-            track = getattr(player, "current_track", None)
-            requester = getattr(track, "requester", None) if track else None
-            queue_items = []
-            try:
-                queue_items = list(player.queue)[:10]
-            except Exception:
-                queue_items = []
-            try:
-                queue_size = len(player.queue)
-            except Exception:
-                queue_size = len(queue_items)
-            players.append(
-                {
-                    "guild_id": getattr(getattr(player, "guild", None), "id", None),
-                    "guild_name": getattr(getattr(player, "guild", None), "name", None),
-                    "channel_name": getattr(getattr(player, "channel", None), "name", None),
-                    "control_message_id": getattr(getattr(player, "control_message", None), "id", None),
-                    "text_channel_id": getattr(getattr(getattr(player, "control_message", None), "channel", None), "id", None),
-                    "playing": bool(getattr(player, "playing", False)),
-                    "paused": bool(getattr(player, "paused", False)),
-                    "volume": getattr(player, "volume", None),
-                    "queue_size": queue_size,
-                    "track": {
-                        "title": getattr(track, "title", None),
-                        "author": display_author(getattr(track, "author", None)) if track else None,
-                        "duration": _format_duration_ms(getattr(track, "length", None)) if track else None,
-                        "position": _format_duration_ms(getattr(player, "position", None)),
-                    } if track else None,
-                    "current_track": {
-                        "title": getattr(track, "title", None),
-                        "author": display_author(getattr(track, "author", None)) if track else None,
-                        "duration": _format_duration_ms(getattr(track, "length", None)) if track else None,
-                        "position": _format_duration_ms(getattr(player, "position", None)),
-                        "requester": getattr(requester, "mention", None)
-                        or getattr(requester, "display_name", None)
-                        or getattr(requester, "name", None)
-                        or None,
-                        "source": getattr(track, "uri", None),
-                    } if track else None,
-                    "queue_preview": [getattr(item, "title", str(item)) for item in queue_items],
-                }
-            )
+
+def _collect_runtime_status(bot: discord.Client | None = None) -> dict[str, object]:
+    player_state = _load_player_state()
+    panel_state = _load_panel_state()
+
+    players: list[dict[str, object]] = []
+    for guild_id_str, pd in player_state.items():
+        if not isinstance(pd, dict):
+            continue
+        guild_id = _env_int(str(guild_id_str))
+        if guild_id is None:
+            continue
+
+        track_data = pd.get("track_data") if isinstance(pd.get("track_data"), dict) else {}
+        queue_data = pd.get("queue_data") if isinstance(pd.get("queue_data"), list) else []
+        player_snapshot = {
+            "guild_id": guild_id,
+            "guild_name": _guild_label(bot, guild_id),
+            "channel_name": _channel_label(_find_snapshot_guild(guild_id), _env_int(str(pd.get("channel_id") or 0))),
+            "control_message_id": pd.get("control_message_id"),
+            "text_channel_id": pd.get("text_channel_id"),
+            "playing": bool(pd.get("position") is not None or track_data),
+            "paused": False,
+            "volume": pd.get("volume"),
+            "queue_size": len(queue_data) if queue_data else len(pd.get("queue_encoded") or []),
+            "track": {
+                "title": track_data.get("title"),
+                "author": track_data.get("author"),
+                "duration": _format_duration_ms(track_data.get("duration")),
+                "position": _format_duration_ms(pd.get("position")),
+            } if track_data else None,
+            "current_track": {
+                "title": track_data.get("title"),
+                "author": track_data.get("author"),
+                "duration": _format_duration_ms(track_data.get("duration")),
+                "position": _format_duration_ms(pd.get("position")),
+                "requester": track_data.get("requester"),
+                "source": track_data.get("source") or track_data.get("uri"),
+            } if track_data else None,
+            "queue_preview": [
+                item.get("title", "Unknown") if isinstance(item, dict) else str(item)
+                for item in queue_data[:10]
+            ] if queue_data else [],
+        }
+        players.append(player_snapshot)
+
+    guilds = panel_state.get("guilds") if isinstance(panel_state.get("guilds"), list) else []
+    guild_count = len(guilds) if guilds else len({p["guild_id"] for p in players})
+    member_count = 0
+    for guild in guilds:
+        if isinstance(guild, dict):
+            member_count += int(guild.get("member_count") or 0)
 
     return {
         "uptime": _format_uptime(time.time() - _BOOT_TS),
-        "latency_ms": round((bot.latency or 0) * 1000, 1) if getattr(bot, "latency", None) is not None else None,
-        "guild_count": len(getattr(bot, "guilds", []) or []),
-        "user_count": sum(getattr(guild, "member_count", 0) or 0 for guild in getattr(bot, "guilds", []) or []),
-        "extensions": sorted(getattr(bot, "extensions", {}).keys()),
-        "voice_clients": len(getattr(bot, "voice_clients", []) or []),
-        "is_closed": bool(getattr(bot, "is_closed", lambda: False)()),
-        "ws_connected": getattr(bot, "ws", None) is not None,
-        "node_identifier": getattr(node, "identifier", None),
-        "node_players": len(getattr(node, "players", {}) or {}) if node is not None else 0,
+        "latency_ms": None if bot is None else round((bot.latency or 0) * 1000, 1) if getattr(bot, "latency", None) is not None else None,
+        "guild_count": guild_count,
+        "user_count": member_count,
+        "extensions": [],
+        "voice_clients": len(players),
+        "is_closed": False if bot is None else bool(getattr(bot, "is_closed", lambda: False)()),
+        "ws_connected": False if bot is None else getattr(bot, "ws", None) is not None,
+        "node_identifier": "local-state",
+        "node_players": len(players),
         "players": players,
     }
 
@@ -742,7 +814,7 @@ def _render_player_rows(players: list[dict[str, object]]) -> str:
     )
 
 
-def _render_env_sections(bot: discord.Client) -> str:
+def _render_env_sections(bot: discord.Client | None) -> str:
     current = _current_env_snapshot()
     sections = {
         "Core": ["DISCORD_TOKEN", "OWNER_ID", "GUILD_ID", "MUSICBOT_DATA_DIR", "MUSICBOT_LOG_DIR"],
@@ -773,7 +845,7 @@ def _render_env_sections(bot: discord.Client) -> str:
     return "".join(parts)
 
 
-def _render_dashboard(bot: discord.Client, token: str, store: JsonStore) -> str:
+def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) -> str:
     status = _collect_runtime_status(bot)
     current_env = _current_env_snapshot()
     web_config = store.load()
@@ -816,8 +888,10 @@ def _render_dashboard(bot: discord.Client, token: str, store: JsonStore) -> str:
         <div class="actions">
           <form method="post" action="/sync?token={_esc(token)}"><button type="submit">Sync commands</button></form>
           <form method="post" action="/reload?token={_esc(token)}"><input name="extension" placeholder="module name" /><button type="submit">Reload</button></form>
+          <form method="post" action="/restart-bot?token={_esc(token)}"><button type="submit" class="btn danger">Restart bot</button></form>
         </div>
         <p class="subtle">Use module names like <code>giveaway</code>, <code>gsay</code>, <code>signups</code>, <code>joinfamily</code>, <code>ocr_module</code>.</p>
+        <p class="mini">Reload/sync are queued and executed by the bot when it is online; restart uses systemd.</p>
       </div>
 
       <div class="card">
@@ -859,7 +933,7 @@ def _render_dashboard(bot: discord.Client, token: str, store: JsonStore) -> str:
     return _page("Musicbot Admin", token, body)
 
 
-def _render_music_page(bot: discord.Client, token: str) -> str:
+def _render_music_page(bot: discord.Client | None, token: str) -> str:
     status = _collect_runtime_status(bot)
     players = status.get("players") if isinstance(status.get("players"), list) else []
     body = f"""
@@ -994,7 +1068,7 @@ def _read_log_tail(lines_count: int) -> tuple[str, str]:
 
 async def _index(request: web.Request) -> web.Response:
     _require_token(request)
-    bot = request.app["bot"]
+    bot = request.app.get("bot")
     token = request.query.get("token", "")
     store: JsonStore = request.app["config_store"]
     return web.Response(text=_render_dashboard(bot, token, store), content_type="text/html")
@@ -1002,7 +1076,7 @@ async def _index(request: web.Request) -> web.Response:
 
 async def _music(request: web.Request) -> web.Response:
     _require_token(request)
-    bot = request.app["bot"]
+    bot = request.app.get("bot")
     token = request.query.get("token", "")
     return web.Response(text=_render_music_page(bot, token), content_type="text/html")
 
@@ -1072,7 +1146,7 @@ async def _config_post(request: web.Request) -> web.Response:
 
 async def _api_status(request: web.Request) -> web.Response:
     _require_token(request)
-    bot = request.app["bot"]
+    bot = request.app.get("bot")
     store: JsonStore = request.app["config_store"]
     payload = {
         "runtime": _collect_runtime_status(bot),
@@ -1085,13 +1159,13 @@ async def _api_status(request: web.Request) -> web.Response:
 
 async def _api_music(request: web.Request) -> web.Response:
     _require_token(request)
-    payload = _collect_runtime_status(request.app["bot"])
+    payload = _collect_runtime_status(request.app.get("bot"))
     return web.json_response(payload, dumps=lambda obj: json.dumps(obj, ensure_ascii=False, indent=2))
 
 
 async def _env_get(request: web.Request) -> web.Response:
     _require_token(request)
-    bot = request.app["bot"]
+    bot = request.app.get("bot")
     token = request.query.get("token", "")
     current = _current_env_snapshot()
     resolved_core = [
@@ -1167,7 +1241,7 @@ async def _env_save(request: web.Request) -> web.Response:
 async def _settings_get(request: web.Request) -> web.Response:
     _require_token(request)
     token = request.query.get("token", "")
-    bot = request.app["bot"]
+    bot = request.app.get("bot")
 
     store: JsonStore = request.app["config_store"]
     cfg = store.load()
@@ -1399,44 +1473,80 @@ async def _settings_save(request: web.Request) -> web.Response:
     raise web.HTTPFound(location=f"/settings?token={token}")
 
 
+def _enqueue_admin_command(command_type: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+    command = {
+        "id": f"{time.time_ns()}",
+        "type": command_type,
+        "payload": payload or {},
+        "status": "pending",
+        "created_at": time.time(),
+    }
+
+    def _mutate(state: dict) -> dict:
+        pending = state.get("pending")
+        if not isinstance(pending, list):
+            pending = []
+        pending.append(command)
+        state["pending"] = pending
+        history = state.get("history")
+        if not isinstance(history, list):
+            history = []
+        state["history"] = history[-50:]
+        return state
+
+    _admin_queue_store.update(_mutate)
+    return command
+
+
+async def _restart_bot(request: web.Request) -> web.Response:
+    _require_token(request)
+    restart_cmd = os.getenv("WEB_ADMIN_RESTART_COMMAND", "sudo -n /bin/systemctl restart musicbot.service").strip()
+    if not restart_cmd:
+        raise web.HTTPBadRequest(text="Restart command is not configured")
+
+    completed = await asyncio.to_thread(
+        subprocess.run,
+        shlex.split(restart_cmd),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        stderr = (completed.stderr or completed.stdout or "restart failed").strip()
+        logger.warning("Restart command failed: %s", stderr)
+        return web.Response(text=f"Restart failed: {stderr}\n", content_type="text/plain", status=500)
+    return web.Response(text="Restart queued/executed\n", content_type="text/plain")
+
+
 async def _reload(request: web.Request) -> web.Response:
     _require_token(request)
-    bot: discord.Client = request.app["bot"]
     data = await request.post()
     extension = (data.get("extension") or "").strip()
     if not extension:
         raise web.HTTPBadRequest(text="Missing 'extension' form field")
 
     try:
-        await bot.reload_extension(extension)
+        _enqueue_admin_command("reload_extension", {"extension": extension})
     except Exception as exc:
-        logger.exception("Web reload failed for %s", extension)
+        logger.exception("Web reload enqueue failed for %s", extension)
         return web.Response(text=f"Reload failed: {exc}\n", content_type="text/plain", status=500)
-    return web.Response(text=f"Reloaded: {extension}\n", content_type="text/plain")
+    return web.Response(text=f"Queued reload: {extension}\n", content_type="text/plain")
 
 async def _sync(request: web.Request) -> web.Response:
     _require_token(request)
-    bot = request.app["bot"]
-
-    guild_id_str = os.getenv("GUILD_ID")
     try:
-        if guild_id_str and guild_id_str.isdigit():
-            guild = discord.Object(id=int(guild_id_str))
-            synced = await bot.tree.sync(guild=guild)
-        else:
-            synced = await bot.tree.sync()
+        _enqueue_admin_command("sync_commands", {"guild_id": os.getenv("GUILD_ID") or ""})
     except Exception as exc:
-        logger.exception("Web sync failed")
+        logger.exception("Web sync enqueue failed")
         return web.Response(text=f"Sync failed: {exc}\n", content_type="text/plain", status=500)
 
-    names = [getattr(cmd, "name", "?") for cmd in (synced or [])]
-    return web.Response(text="Synced:\n" + "\n".join(names) + "\n", content_type="text/plain")
+    return web.Response(text="Queued sync commands\n", content_type="text/plain")
 
 
-async def maybe_start_web_admin(bot: discord.Client) -> web.AppRunner | None:
+async def _start_web_admin(bot: discord.Client | None) -> web.AppRunner:
     enabled = os.getenv("WEB_ADMIN_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
     if not enabled:
-        return None
+        raise RuntimeError("WEB_ADMIN_ENABLED is not set")
 
     host = os.getenv("WEB_ADMIN_HOST", "0.0.0.0")
     port_raw = os.getenv("WEB_ADMIN_PORT", "8080").strip()
@@ -1449,7 +1559,8 @@ async def maybe_start_web_admin(bot: discord.Client) -> web.AppRunner | None:
     store = JsonStore(data_path("web_config.json"))
 
     app = web.Application()
-    app["bot"] = bot
+    if bot is not None:
+        app["bot"] = bot
     app["config_store"] = store
 
     app.add_routes(
@@ -1467,6 +1578,7 @@ async def maybe_start_web_admin(bot: discord.Client) -> web.AppRunner | None:
             web.post("/settings/save", _settings_save),
             web.post("/reload", _reload),
             web.post("/sync", _sync),
+            web.post("/restart-bot", _restart_bot),
         ]
     )
 
@@ -1477,3 +1589,25 @@ async def maybe_start_web_admin(bot: discord.Client) -> web.AppRunner | None:
 
     logger.info("Web admin started on http://%s:%s (protected)", host, port)
     return runner
+
+
+async def maybe_start_web_admin(bot: discord.Client) -> web.AppRunner | None:
+    enabled = os.getenv("WEB_ADMIN_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return None
+    return await _start_web_admin(bot)
+
+
+async def run_web_admin() -> None:
+    runner = await _start_web_admin(None)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run_web_admin())
+    except KeyboardInterrupt:
+        pass

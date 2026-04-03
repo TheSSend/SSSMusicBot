@@ -1,0 +1,21 @@
+[Unit]
+Description=SSSMusicBot Web Admin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=musicbot
+Group=musicbot
+WorkingDirectory=/opt/sssmusicbot
+Environment=PYTHONUNBUFFERED=1
+Environment=MUSICBOT_LOG_DIR=/var/log/sssmusicbot
+Environment=MUSICBOT_DATA_DIR=/var/lib/sssmusicbot
+Environment=WEB_ADMIN_ENABLED=1
+ExecStart=/opt/sssmusicbot/.venv/bin/python /opt/sssmusicbot/web_admin.py
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
