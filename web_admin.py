@@ -1436,6 +1436,20 @@ async def _logs(request: web.Request) -> web.Response:
     token = request.query.get("token", "")
 
     tail, source = _read_log_tail(n)
+    extra_head = """
+    <script>
+      window.addEventListener('DOMContentLoaded', () => {
+        const viewer = document.querySelector('.log-viewer');
+        if (viewer) {
+          viewer.scrollTop = viewer.scrollHeight;
+        }
+        const pre = viewer ? viewer.querySelector('pre') : null;
+        if (pre) {
+          pre.scrollTop = pre.scrollHeight;
+        }
+      });
+    </script>
+    """
     body = f"""
     <div class="topbar hero">
       <div class="brand">
@@ -1452,7 +1466,7 @@ async def _logs(request: web.Request) -> web.Response:
       <div class="log-viewer"><pre>{_esc(tail)}</pre></div>
     </div>
     """
-    return _html_response(_page("Logs", token, body, status=_collect_runtime_status(bot)))
+    return _html_response(_page("Logs", token, body, extra_head=extra_head, status=_collect_runtime_status(bot)))
 
 
 async def _config_get(request: web.Request) -> web.Response:
