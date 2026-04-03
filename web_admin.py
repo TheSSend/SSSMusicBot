@@ -5,6 +5,7 @@ import html as html_lib
 import logging
 import base64
 import binascii
+import subprocess
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -305,24 +306,43 @@ def _collect_runtime_status(bot: discord.Client) -> dict[str, object]:
     if node is not None:
         for player in getattr(node, "players", {}).values():
             track = getattr(player, "current_track", None)
+            requester = getattr(track, "requester", None) if track else None
             queue_items = []
             try:
-                queue_items = list(player.queue)[:5]
+                queue_items = list(player.queue)[:10]
             except Exception:
                 queue_items = []
+            try:
+                queue_size = len(player.queue)
+            except Exception:
+                queue_size = len(queue_items)
             players.append(
                 {
                     "guild_id": getattr(getattr(player, "guild", None), "id", None),
                     "guild_name": getattr(getattr(player, "guild", None), "name", None),
                     "channel_name": getattr(getattr(player, "channel", None), "name", None),
+                    "control_message_id": getattr(getattr(player, "control_message", None), "id", None),
+                    "text_channel_id": getattr(getattr(getattr(player, "control_message", None), "channel", None), "id", None),
                     "playing": bool(getattr(player, "playing", False)),
                     "paused": bool(getattr(player, "paused", False)),
-                    "queue_size": len(getattr(player, "queue", []) or []) if hasattr(player, "queue") else 0,
+                    "volume": getattr(player, "volume", None),
+                    "queue_size": queue_size,
                     "track": {
                         "title": getattr(track, "title", None),
                         "author": display_author(getattr(track, "author", None)) if track else None,
                         "duration": _format_duration_ms(getattr(track, "length", None)) if track else None,
                         "position": _format_duration_ms(getattr(player, "position", None)),
+                    } if track else None,
+                    "current_track": {
+                        "title": getattr(track, "title", None),
+                        "author": display_author(getattr(track, "author", None)) if track else None,
+                        "duration": _format_duration_ms(getattr(track, "length", None)) if track else None,
+                        "position": _format_duration_ms(getattr(player, "position", None)),
+                        "requester": getattr(requester, "mention", None)
+                        or getattr(requester, "display_name", None)
+                        or getattr(requester, "name", None)
+                        or None,
+                        "source": getattr(track, "uri", None),
                     } if track else None,
                     "queue_preview": [getattr(item, "title", str(item)) for item in queue_items],
                 }
@@ -366,23 +386,27 @@ def _render_player_rows(players: list[dict[str, object]]) -> str:
     rows = []
     for player in players:
         track = player.get("track") or {}
+        current_track = player.get("current_track") or {}
         queue_preview = player.get("queue_preview") or []
         queue_preview_text = "\n".join(queue_preview) or "Queue empty."
+        requester_value = current_track.get("requester") or "—"
+        control_value = f"#{player.get('text_channel_id') or '—'} / msg {player.get('control_message_id') or '—'}"
         rows.append(
             "<tr>"
             f"<td>{_esc(player.get('guild_name') or player.get('guild_id') or '—')}</td>"
             f"<td>{_esc(player.get('channel_name') or '—')}</td>"
-            f"<td>{_esc(track.get('title') or '—')}<div class='muted'>{_esc(track.get('author') or '')}</div></td>"
-            f"<td>{_esc(track.get('position') or '—')} / {_esc(track.get('duration') or '—')}</td>"
+            f"<td>{_esc(current_track.get('title') or track.get('title') or '—')}<div class='muted'>{_esc(current_track.get('author') or track.get('author') or '')}</div>"
+            f"<div class='muted'>Requester: {_esc(requester_value)}</div></td>"
+            f"<td>{_esc(current_track.get('position') or track.get('position') or '—')} / {_esc(current_track.get('duration') or track.get('duration') or '—')}</td>"
             f"<td>{_esc(player.get('queue_size') or 0)}</td>"
-            f"<td>{_esc('playing' if player.get('playing') else 'paused' if player.get('paused') else 'idle')}</td>"
-            f"<td><details><summary>Preview</summary><pre>{_esc(queue_preview_text)}</pre></details></td>"
+            f"<td>{_esc('playing' if player.get('playing') else 'paused' if player.get('paused') else 'idle')}<div class='muted'>{_esc('vol ' + str(player.get('volume')) if player.get('volume') is not None else 'vol —')}</div></td>"
+            f"<td><div class='muted'>{_esc(control_value)}</div><details><summary>Preview</summary><pre>{_esc(queue_preview_text)}</pre></details></td>"
             "</tr>"
         )
     return (
         "<table><thead><tr>"
         "<th>Guild</th><th>Voice channel</th><th>Current track</th><th>Progress</th>"
-        "<th>Queue</th><th>State</th><th>Queue preview</th>"
+        "<th>Queue</th><th>State</th><th>Controls / Queue preview</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table>"
@@ -469,6 +493,7 @@ def _render_dashboard(bot: discord.Client, token: str, store: JsonStore) -> str:
         <div class="actions">
           <a class="btn secondary" href="/settings?token={_esc(token)}">Module settings</a>
           <a class="btn secondary" href="/env?token={_esc(token)}">Environment</a>
+          <a class="btn secondary" href="/music?token={_esc(token)}">Music</a>
           <a class="btn secondary" href="/logs?n=500&token={_esc(token)}">Last 500 log lines</a>
         </div>
         <div class="footer">Environment changes are written to <code>.env</code>; restart is required for most keys.</div>
@@ -500,6 +525,34 @@ def _render_dashboard(bot: discord.Client, token: str, store: JsonStore) -> str:
     </div>
     """
     return _page("Musicbot Admin", token, body)
+
+
+def _render_music_page(bot: discord.Client, token: str) -> str:
+    status = _collect_runtime_status(bot)
+    players = status.get("players") if isinstance(status.get("players"), list) else []
+    body = f"""
+    <div class="topbar">
+      <div class="brand">
+        <h1>Music</h1>
+        <p>Live players, current track, queue, and control-message state.</p>
+      </div>
+      <div class="chips">
+        <span class="badge green">{_esc(status.get("node_players") or 0)} players</span>
+        <span class="badge">{_esc(status.get("guild_count") or 0)} guilds</span>
+        <a class="btn secondary" href="/?token={_esc(token)}">Dashboard</a>
+        <a class="btn secondary" href="/api/music?token={_esc(token)}">API</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-title"><h2>Summary</h2></div>
+      <div class="stats">{_render_status_cards(status)}</div>
+    </div>
+    <div class="card" style="margin-top: 18px;">
+      <div class="section-title"><h2>Players</h2></div>
+      {_render_player_rows(players)}
+    </div>
+    """
+    return _page("Music", token, body)
 
 
 def _basic_auth_credentials() -> tuple[str, str]:
@@ -547,6 +600,66 @@ def _log_file_path() -> Path:
     return log_dir / "bot.log"
 
 
+def _log_file_candidates() -> list[Path]:
+    candidates = [
+        _log_file_path(),
+        Path(os.getenv("MUSICBOT_LOG_FILE", "bot-runtime.log")),
+        Path("bot-runtime.log"),
+    ]
+    unique: list[Path] = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _read_log_tail_from_file(path: Path, lines_count: int) -> tuple[str | None, str | None]:
+    if not path.exists():
+        return None, None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception as exc:
+        return None, f"Failed to read log file {path}: {exc}"
+    return "\n".join(lines[-lines_count:]) + "\n", str(path)
+
+
+def _read_log_tail_from_journal(lines_count: int) -> tuple[str | None, str | None]:
+    unit = os.getenv("WEB_ADMIN_JOURNAL_UNIT", "musicbot").strip() or "musicbot"
+    try:
+        completed = subprocess.run(
+            ["journalctl", "-u", unit, "--no-pager", "-n", str(lines_count)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception as exc:
+        return None, f"Failed to query journalctl for {unit}: {exc}"
+
+    output = (completed.stdout or completed.stderr or "").strip()
+    if not output:
+        return None, f"Journal for {unit} is empty or unavailable"
+    return output + "\n", f"journalctl -u {unit}"
+
+
+def _read_log_tail(lines_count: int) -> tuple[str, str]:
+    errors: list[str] = []
+    for candidate in _log_file_candidates():
+        tail, source = _read_log_tail_from_file(candidate, lines_count)
+        if tail is not None and source is not None:
+            return tail, source
+        if source:
+            errors.append(source)
+
+    journal_tail, source = _read_log_tail_from_journal(lines_count)
+    if journal_tail is not None and source is not None:
+        return journal_tail, source
+    if source:
+        errors.append(source)
+    message = "\n".join(errors) if errors else "No log sources configured"
+    return f"{message}\n", "unavailable"
+
+
 async def _index(request: web.Request) -> web.Response:
     _require_token(request)
     bot = request.app["bot"]
@@ -555,38 +668,25 @@ async def _index(request: web.Request) -> web.Response:
     return web.Response(text=_render_dashboard(bot, token, store), content_type="text/html")
 
 
+async def _music(request: web.Request) -> web.Response:
+    _require_token(request)
+    bot = request.app["bot"]
+    token = request.query.get("token", "")
+    return web.Response(text=_render_music_page(bot, token), content_type="text/html")
+
+
 async def _logs(request: web.Request) -> web.Response:
     _require_token(request)
     n = int(request.query.get("n", "200"))
     n = max(10, min(n, 5000))
     token = request.query.get("token", "")
 
-    path = _log_file_path()
-    if not path.exists():
-        body = f"""
-        <div class="topbar">
-          <div class="brand">
-            <h1>Logs</h1>
-            <p>Log file not found: <code>{_esc(path)}</code></p>
-          </div>
-          <div class="chips">
-            <a class="btn secondary" href="/?token={_esc(token)}">Dashboard</a>
-          </div>
-        </div>
-        """
-        return web.Response(text=_page("Logs", body), content_type="text/html")
-
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except Exception as exc:
-        return web.Response(text=f"Failed to read log: {exc}\n", content_type="text/plain", status=500)
-
-    tail = "\n".join(lines[-n:]) + "\n"
+    tail, source = _read_log_tail(n)
     body = f"""
     <div class="topbar">
       <div class="brand">
         <h1>Logs</h1>
-        <p>Tail of <code>{_esc(path)}</code></p>
+        <p>Tail of <code>{_esc(source)}</code></p>
       </div>
       <div class="chips">
         <span class="badge">{_esc(n)} lines</span>
@@ -648,6 +748,12 @@ async def _api_status(request: web.Request) -> web.Response:
         "env": _current_env_snapshot(),
         "log_file": str(_log_file_path()),
     }
+    return web.json_response(payload, dumps=lambda obj: json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+async def _api_music(request: web.Request) -> web.Response:
+    _require_token(request)
+    payload = _collect_runtime_status(request.app["bot"])
     return web.json_response(payload, dumps=lambda obj: json.dumps(obj, ensure_ascii=False, indent=2))
 
 
@@ -923,10 +1029,12 @@ async def maybe_start_web_admin(bot: discord.Client) -> web.AppRunner | None:
     app.add_routes(
         [
             web.get("/", _index),
+            web.get("/music", _music),
             web.get("/logs", _logs),
             web.get("/config", _config_get),
             web.post("/config", _config_post),
             web.get("/api/status", _api_status),
+            web.get("/api/music", _api_music),
             web.get("/env", _env_get),
             web.post("/env/save", _env_save),
             web.get("/settings", _settings_get),
