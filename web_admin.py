@@ -332,13 +332,33 @@ def _page(title: str, token: str, body: str, extra_head: str = "", status: dict[
     .field input:focus, .field textarea:focus, .field select:focus {{ border-color: rgba(125, 211, 252, 0.45); box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.14); }}
     .field textarea {{ min-height: 160px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
     .hint {{ color: var(--muted); font-size: 12px; line-height: 1.4; }}
-    table {{ width: 100%; border-collapse: collapse; overflow: hidden; }}
+    .table-wrap {{ overflow-x: auto; border-radius: 14px; border: 1px solid rgba(148, 163, 184, 0.12); }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 760px; }}
     th, td {{ padding: 10px 12px; text-align: left; border-bottom: 1px solid rgba(148, 163, 184, 0.12); vertical-align: top; }}
     th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
     pre {{
       margin: 0; padding: 14px; border-radius: 14px; overflow: auto;
       background: rgba(6, 12, 21, 0.96); border: 1px solid var(--border);
       max-height: 420px;
+    }}
+    .log-viewer {{
+      overflow: auto;
+      max-height: 70vh;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(6, 12, 21, 0.96);
+      padding: 10px;
+    }}
+    .log-viewer pre {{
+      border: 0;
+      padding: 0;
+      margin: 0;
+      max-height: none;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      line-height: 1.45;
+      font-size: 13px;
     }}
     details summary {{ cursor: pointer; color: #7dd3fc; }}
     .footer {{ margin-top: 20px; color: var(--muted); font-size: 12px; }}
@@ -372,7 +392,7 @@ def _page(title: str, token: str, body: str, extra_head: str = "", status: dict[
     .dashboard-split {{
       grid-column: 1 / -1;
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 18px;
       align-items: start;
     }}
@@ -416,6 +436,12 @@ def _page(title: str, token: str, body: str, extra_head: str = "", status: dict[
       font-size: 14px;
       line-height: 1;
     }}
+    .topbar-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: flex-end;
+    }}
     @media (max-width: 1100px) {{
       .app-shell {{ grid-template-columns: 1fr; }}
       .sidebar {{ position: relative; top: 0; min-height: auto; }}
@@ -428,6 +454,11 @@ def _page(title: str, token: str, body: str, extra_head: str = "", status: dict[
       .actions {{ width: 100%; }}
       .btn, button {{ width: 100%; }}
       .nav-item {{ width: 100%; }}
+      .link-grid {{ grid-template-columns: 1fr; }}
+      .field-grid {{ grid-template-columns: 1fr; }}
+      .stats {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .dashboard-split {{ gap: 14px; }}
+      .log-viewer pre {{ font-size: 12px; }}
     }}
     {extra_head}
   </style>
@@ -684,6 +715,15 @@ def _status_emoji(status: object) -> str:
     if value in {"connecting", "restarting", "starting", "resuming"}:
         return "🟡"
     return "🔴"
+
+
+def _status_label(status: object) -> str:
+    value = str(status or "").strip().lower()
+    if value in {"online", "ready", "connected"}:
+        return "Online"
+    if value in {"connecting", "restarting", "starting", "resuming"}:
+        return "Reconnecting"
+    return "Offline"
 
 
 def _selected_guild(bot: discord.Client | None) -> discord.Guild | dict[str, object] | None:
@@ -1066,12 +1106,12 @@ def _render_player_rows(players: list[dict[str, object]]) -> str:
             "</tr>"
         )
     return (
-        "<table><thead><tr>"
+        '<div class="table-wrap"><table><thead><tr>'
         "<th>Guild</th><th>Voice channel</th><th>Current track</th><th>Progress</th>"
         "<th>Queue</th><th>State</th><th>Controls / Queue preview</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
-        + "</tbody></table>"
+        + "</tbody></table></div>"
     )
 
 
@@ -1121,7 +1161,7 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
         f"<span class='badge'>{_esc('restart required for .env changes')}</span>",
         f"<span class='badge purple' data-live='uptime' data-boot-ts='{_BOOT_TS}' data-live-key='panel_uptime'>Panel uptime: {_esc(status.get('panel_uptime') or '—')}</span>",
         f"<span class='badge blue' data-live='uptime' data-boot-ts='{_esc(status.get('bot_boot_ts') or '')}' data-live-key='bot_uptime'>Bot uptime: {_esc(status.get('bot_uptime') or '—')}</span>",
-        f"<span class='badge blue' data-live-key='bot_status'>Bot status: {_esc(_status_emoji(status.get('bot_status')))} {_esc(str(status.get('bot_status') or 'offline').title())}</span>",
+        f"<span class='badge blue' data-live-key='bot_status'>Bot status: {_esc(_status_emoji(status.get('bot_status')))} {_esc(_status_label(status.get('bot_status')))}</span>",
     ]
 
     body = f"""
@@ -1132,6 +1172,9 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
       </div>
       <div class="chips">
         {''.join(env_status)}
+        <form method="post" action="/restart-bot?token={_esc(token)}" onsubmit="return confirm('Restart the Discord bot service now?')">
+          <button type="submit" class="btn danger">Restart bot</button>
+        </form>
       </div>
     </div>
 
@@ -1178,6 +1221,32 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
           </div>
           <div class="footer">Environment changes are written to <code>.env</code>; restart is required for most keys.</div>
         </div>
+
+        <div class="card">
+          <div class="section-title"><h2>System snapshot</h2></div>
+          <div class="status-grid">
+            <div class="compact-stat">
+              <div class="label">Bot state</div>
+              <div class="value" data-live-key="bot_status">{_esc(_status_emoji(status.get('bot_status')))} {_esc(_status_label(status.get('bot_status')))}</div>
+              <div class="hint">Discord connection state.</div>
+            </div>
+            <div class="compact-stat">
+              <div class="label">Bot uptime</div>
+              <div class="value" data-live="uptime" data-boot-ts="{_esc(status.get('bot_boot_ts') or '')}" data-live-key="bot_uptime">{_esc(status.get('bot_uptime') or '—')}</div>
+              <div class="hint">Discord process age.</div>
+            </div>
+            <div class="compact-stat">
+              <div class="label">Panel uptime</div>
+              <div class="value" data-live="uptime" data-boot-ts="{_BOOT_TS}" data-live-key="panel_uptime">{_esc(status.get('panel_uptime') or '—')}</div>
+              <div class="hint">Web admin process age.</div>
+            </div>
+            <div class="compact-stat">
+              <div class="label">Latency</div>
+              <div class="value" data-live-key="bot_latency_ms">{_esc(status.get('bot_latency_ms') or '—')} ms</div>
+              <div class="hint">Discord gateway latency.</div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="card" style="grid-column: 1 / -1;">
@@ -1218,10 +1287,10 @@ def _render_music_page(bot: discord.Client | None, token: str) -> str:
         <h1>Music</h1>
         <p>Live players, current track, queue, and control-message state.</p>
       </div>
-      <div class="chips">
-        <span class="badge green">{_esc(status.get("node_players") or 0)} players</span>
-        <span class="badge">{_esc(status.get("guild_count") or 0)} guilds</span>
-        <span class="badge blue" data-live-key="bot_status">Bot status: {_esc(_status_emoji(status.get('bot_status')))} {_esc(str(status.get('bot_status') or 'offline').title())}</span>
+        <div class="chips">
+            <span class="badge green">{_esc(status.get("node_players") or 0)} players</span>
+            <span class="badge">{_esc(status.get("guild_count") or 0)} guilds</span>
+        <span class="badge blue" data-live-key="bot_status">Bot status: {_esc(_status_emoji(status.get('bot_status')))} {_esc(_status_label(status.get('bot_status')))}</span>
         <a class="btn secondary" href="/?token={_esc(token)}">Dashboard</a>
         {_refresh_button(refresh_href)}
         <a class="btn secondary" href="/api/music?token={_esc(token)}">API</a>
@@ -1380,7 +1449,7 @@ async def _logs(request: web.Request) -> web.Response:
       </div>
     </div>
     <div class="card">
-      <pre>{_esc(tail)}</pre>
+      <div class="log-viewer"><pre>{_esc(tail)}</pre></div>
     </div>
     """
     return _html_response(_page("Logs", token, body, status=_collect_runtime_status(bot)))
