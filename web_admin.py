@@ -447,8 +447,8 @@ def _page(title: str, token: str, body: str, extra_head: str = "", status: dict[
         <h4>Bot status</h4>
         <div class="status-grid">
           <div class="bot-status-pill" data-live-key="bot_status"><span class="emoji">🔴</span><span class="text">Offline</span></div>
-          <div class="status-row"><span class="status-label">Bot uptime</span><span class="status-value" data-live="uptime" data-base-seconds="{_esc(status.get('bot_uptime_seconds') or 0)}" data-live-start="{int(time.time() * 1000)}" data-live-key="bot_uptime">—</span></div>
-          <div class="status-row"><span class="status-label">Panel uptime</span><span class="status-value" data-live="uptime" data-base-seconds="{_esc(status.get('panel_uptime_seconds') or 0)}" data-live-start="{int(time.time() * 1000)}" data-live-key="panel_uptime">—</span></div>
+          <div class="status-row"><span class="status-label">Bot uptime</span><span class="status-value" data-live="uptime" data-boot-ts="{_esc(status.get('bot_boot_ts') or '')}" data-live-key="bot_uptime">—</span></div>
+          <div class="status-row"><span class="status-label">Panel uptime</span><span class="status-value" data-live="uptime" data-boot-ts="{_BOOT_TS}" data-live-key="panel_uptime">—</span></div>
           <div class="status-row"><span class="status-label">Latency</span><span class="status-value" data-live-key="bot_latency_ms">— ms</span></div>
         </div>
       </div>
@@ -528,13 +528,11 @@ def _page(title: str, token: str, body: str, extra_head: str = "", status: dict[
     }};
 
     const tickUptimes = () => {{
-      const now = Date.now();
+      const now = Date.now() / 1000;
       document.querySelectorAll('[data-live="uptime"]').forEach((el) => {{
-        const baseSeconds = Number(el.dataset.baseSeconds || 0);
-        const startMs = Number(el.dataset.liveStart || 0);
-        if (!baseSeconds) return;
-        const elapsed = Math.floor((now - startMs) / 1000);
-        const text = formatUptime(baseSeconds + Math.max(0, elapsed));
+        const bootTs = Number(el.dataset.bootTs || 0);
+        if (!bootTs) return;
+        const text = formatUptime(now - bootTs);
         if (el.classList.contains("badge")) {{
           const prefix = el.dataset.liveKey === "panel_uptime" ? "Panel uptime: " : "Bot uptime: ";
           el.textContent = `${{prefix}}${{text}}`;
@@ -552,16 +550,14 @@ def _page(title: str, token: str, body: str, extra_head: str = "", status: dict[
       setByKey("user_count", runtime.user_count ?? 0);
       setByKey("node_players", runtime.node_players ?? 0);
       setByKey("voice_clients", runtime.voice_clients ?? 0);
-      if (runtime.panel_uptime_seconds !== undefined && runtime.panel_uptime_seconds !== null) {{
+      if (runtime.panel_boot_ts !== undefined && runtime.panel_boot_ts !== null) {{
         document.querySelectorAll('[data-live-key="panel_uptime"]').forEach((el) => {{
-          el.dataset.baseSeconds = runtime.panel_uptime_seconds;
-          el.dataset.liveStart = Date.now();
+          el.dataset.bootTs = runtime.panel_boot_ts;
         }});
       }}
-      if (runtime.bot_uptime_seconds !== undefined && runtime.bot_uptime_seconds !== null) {{
+      if (runtime.bot_boot_ts !== undefined && runtime.bot_boot_ts !== null) {{
         document.querySelectorAll('[data-live-key="bot_uptime"]').forEach((el) => {{
-          el.dataset.baseSeconds = runtime.bot_uptime_seconds;
-          el.dataset.liveStart = Date.now();
+          el.dataset.bootTs = runtime.bot_boot_ts;
         }});
       }}
       tickUptimes();
@@ -915,7 +911,7 @@ def _collect_runtime_status(bot: discord.Client | None = None) -> dict[str, obje
     bot_snapshot = panel_state.get("bot") if isinstance(panel_state.get("bot"), dict) else {}
 
     bot_boot_ts = bot_snapshot.get("boot_ts")
-    bot_uptime_seconds = bot_snapshot.get("uptime_seconds")
+    bot_uptime_seconds = None
     bot_status = str(bot_snapshot.get("status") or "offline")
     bot_latency_ms = bot_snapshot.get("latency_ms")
     bot_voice_clients = bot_snapshot.get("voice_client_count") if isinstance(bot_snapshot.get("voice_client_count"), int) else None
@@ -945,7 +941,7 @@ def _collect_runtime_status(bot: discord.Client | None = None) -> dict[str, obje
                 bot_uptime_seconds = max(0.0, time.time() - float(bot_boot_ts))
         except Exception:
             pass
-    elif bot_uptime_seconds is None and bot_boot_ts:
+    elif bot_boot_ts:
         try:
             bot_uptime_seconds = max(0.0, time.time() - float(bot_boot_ts))
         except (TypeError, ValueError):
@@ -1123,8 +1119,8 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
         f"<span class='badge green'>Auth: Basic/token</span>",
         f"<span class='badge'>{_esc(os.getenv('WEB_ADMIN_HOST', '0.0.0.0'))}:{_esc(os.getenv('WEB_ADMIN_PORT', '8080'))}</span>",
         f"<span class='badge'>{_esc('restart required for .env changes')}</span>",
-        f"<span class='badge purple' data-live='uptime' data-base-seconds='{_esc(status.get('panel_uptime_seconds') or 0)}' data-live-start='{int(time.time() * 1000)}' data-live-key='panel_uptime'>Panel uptime: {_esc(status.get('panel_uptime') or '—')}</span>",
-        f"<span class='badge blue' data-live='uptime' data-base-seconds='{_esc(status.get('bot_uptime_seconds') or 0)}' data-live-start='{int(time.time() * 1000)}' data-live-key='bot_uptime'>Bot uptime: {_esc(status.get('bot_uptime') or '—')}</span>",
+        f"<span class='badge purple' data-live='uptime' data-boot-ts='{_BOOT_TS}' data-live-key='panel_uptime'>Panel uptime: {_esc(status.get('panel_uptime') or '—')}</span>",
+        f"<span class='badge blue' data-live='uptime' data-boot-ts='{_esc(status.get('bot_boot_ts') or '')}' data-live-key='bot_uptime'>Bot uptime: {_esc(status.get('bot_uptime') or '—')}</span>",
         f"<span class='badge blue' data-live-key='bot_status'>Bot status: {_esc(_status_emoji(status.get('bot_status')))} {_esc(str(status.get('bot_status') or 'offline').title())}</span>",
     ]
 
