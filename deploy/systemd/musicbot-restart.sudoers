@@ -1,1 +1,2 @@
+musicbot ALL=NOPASSWD: /usr/bin/systemctl restart musicbot.service
 musicbot ALL=NOPASSWD: /bin/systemctl restart musicbot.service

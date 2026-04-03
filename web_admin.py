@@ -1884,24 +1884,39 @@ def _enqueue_admin_command(command_type: str, payload: dict[str, object] | None 
 
 async def _restart_bot(request: web.Request) -> web.Response:
     _require_token(request)
-    restart_cmd = os.getenv("WEB_ADMIN_RESTART_COMMAND", "sudo -n /bin/systemctl restart musicbot.service").strip()
-    if not restart_cmd:
-        raise web.HTTPBadRequest(text="Restart command is not configured")
+    restart_cmd = os.getenv("WEB_ADMIN_RESTART_COMMAND", "").strip()
+    if restart_cmd:
+        candidates = [shlex.split(restart_cmd)]
+    else:
+        candidates = [
+            ["sudo", "-n", "/usr/bin/systemctl", "restart", "musicbot.service"],
+            ["sudo", "-n", "/bin/systemctl", "restart", "musicbot.service"],
+            ["/usr/bin/systemctl", "restart", "musicbot.service"],
+        ]
 
-    completed = await asyncio.to_thread(
-        subprocess.run,
-        shlex.split(restart_cmd),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0:
+    last_error = "restart failed"
+    for candidate in candidates:
+        completed = await asyncio.to_thread(
+            subprocess.run,
+            candidate,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode == 0:
+            return web.Response(text="Restart queued/executed\n", content_type="text/plain")
+
         stderr = (completed.stderr or completed.stdout or "restart failed").strip()
-        logger.warning("Restart command failed: %s", stderr)
-        if "password is required" in stderr.lower() or "a password is required" in stderr.lower():
-            stderr += "\nGrant the musicbot service user NOPASSWD access to restart musicbot.service via sudoers."
-        return web.Response(text=f"Restart failed: {stderr}\n", content_type="text/plain", status=500)
-    return web.Response(text="Restart queued/executed\n", content_type="text/plain")
+        last_error = stderr or last_error
+        logger.warning("Restart command failed (%s): %s", " ".join(candidate), stderr)
+
+        lowered = stderr.lower()
+        if "password is required" in lowered or "a password is required" in lowered or "not in the sudoers" in lowered:
+            continue
+
+    if "password is required" in last_error.lower() or "a password is required" in last_error.lower() or "not in the sudoers" in last_error.lower():
+        last_error += "\nGrant the musicbot service user NOPASSWD access to restart musicbot.service via sudoers, or install the systemd polkit rule."
+    return web.Response(text=f"Restart failed: {last_error}\n", content_type="text/plain", status=500)
 
 
 async def _reload(request: web.Request) -> web.Response:

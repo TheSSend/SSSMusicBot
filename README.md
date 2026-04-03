@@ -172,7 +172,7 @@ Enable in `.env`:
 - `WEB_ADMIN_PORT=8080`
 - `WEB_ADMIN_TOKEN=...` (required)
 - `WEB_ADMIN_BASIC_USER=...` / `WEB_ADMIN_BASIC_PASSWORD=...` for browser login prompt
-- `WEB_ADMIN_RESTART_COMMAND=sudo -n /bin/systemctl restart musicbot.service` (optional, used by the Restart button)
+- `WEB_ADMIN_RESTART_COMMAND=sudo -n /usr/bin/systemctl restart musicbot.service` (optional, used by the Restart button)
 
 Open in browser:
 
@@ -196,7 +196,7 @@ Security notes:
 
 - Use a strong token and keep it private.
 - If you expose restart functionality, lock down `WEB_ADMIN_RESTART_COMMAND` with sudoers so it can only restart `musicbot.service`.
-- Install the helper sudoers file from `deploy/systemd/musicbot-restart.sudoers` to avoid password prompts when using the Restart button.
+- Install the helper sudoers file from `deploy/systemd/musicbot-restart.sudoers` to avoid password prompts when using the Restart button. The panel now tries both `/usr/bin/systemctl` and `/bin/systemctl` for compatibility.
 - Prefer running behind a reverse proxy with HTTPS if exposing to the internet.
 
 ## Lyrics source fallback

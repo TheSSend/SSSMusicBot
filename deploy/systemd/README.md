@@ -56,9 +56,10 @@ sudo cp deploy/systemd/musicbot-restart.sudoers /etc/sudoers.d/musicbot-restart
 sudo chmod 440 /etc/sudoers.d/musicbot-restart
 ```
 
-Or edit it manually with `visudo` and keep the same line:
+Or edit it manually with `visudo` and keep the same lines:
 
 ```text
+musicbot ALL=NOPASSWD: /usr/bin/systemctl restart musicbot.service
 musicbot ALL=NOPASSWD: /bin/systemctl restart musicbot.service
 ```
 
