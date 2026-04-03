@@ -294,6 +294,25 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     .btn.success {{ background: linear-gradient(180deg, rgba(34, 197, 94, 0.95), rgba(21, 128, 61, 0.95)); }}
     .btn.danger {{ background: linear-gradient(180deg, rgba(248, 113, 113, 0.95), rgba(220, 38, 38, 0.95)); }}
     .actions {{ display: flex; flex-wrap: wrap; gap: 10px; }}
+    .action-stack {{ display: flex; flex-direction: column; gap: 10px; }}
+    .action-inline {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }}
+    .action-inline input {{ flex: 1 1 210px; min-width: 0; }}
+    .action-inline button {{ flex: 0 0 auto; }}
+    .link-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }}
+    .link-card {{
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px 14px; border-radius: 14px; background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+    }}
+    .link-card .mini {{ margin: 0; }}
+    .status-grid {{ display: grid; gap: 10px; }}
+    .status-row {{
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 10px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+    }}
+    .status-label {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
+    .status-value {{ font-weight: 800; }}
     .field-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }}
     .field {{
       display: flex; flex-direction: column; gap: 6px; padding: 12px;
@@ -361,7 +380,7 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
     {extra_head}
   </style>
 </head>
-<body>
+<body data-token="{_esc(token)}">
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand-stack">
@@ -372,6 +391,15 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
       <nav class="nav">
         {''.join(nav_html)}
       </nav>
+      <div class="sidebar-card">
+        <h4>Bot status</h4>
+        <div class="status-grid">
+          <div class="status-row"><span class="status-label">State</span><span class="status-value" data-live-key="bot_status">Offline</span></div>
+          <div class="status-row"><span class="status-label">Bot uptime</span><span class="status-value" data-live="uptime" data-boot-ts="" data-live-key="bot_uptime">—</span></div>
+          <div class="status-row"><span class="status-label">Panel uptime</span><span class="status-value" data-live="uptime" data-boot-ts="{_BOOT_TS}" data-live-key="panel_uptime">—</span></div>
+          <div class="status-row"><span class="status-label">Latency</span><span class="status-value" data-live-key="bot_latency_ms">— ms</span></div>
+        </div>
+      </div>
       <div class="sidebar-card">
         <h4>Access</h4>
         <p>Basic Auth or token. Keep this panel behind a strong password if exposed over IP.</p>
@@ -388,6 +416,101 @@ def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
       {body}
     </main>
   </div>
+  <script>
+  (() => {{
+    const token = document.body.dataset.token || "";
+    const statusUrl = token ? `/api/status?token=${{encodeURIComponent(token)}}` : "/api/status";
+
+    const formatUptime = (bootTs) => {{
+      const boot = Number(bootTs || 0);
+      if (!boot) return "—";
+      const total = Math.max(0, Math.floor(Date.now() / 1000) - boot);
+      const days = Math.floor(total / 86400);
+      const hours = Math.floor((total % 86400) / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const seconds = total % 60;
+      const parts = [];
+      if (days) parts.push(`${{days}}d`);
+      if (hours) parts.push(`${{hours}}h`);
+      if (minutes) parts.push(`${{minutes}}m`);
+      if (seconds || !parts.length) parts.push(`${{seconds}}s`);
+      return parts.join(" ");
+    }};
+
+    const setByKey = (key, value) => {{
+      document.querySelectorAll(`[data-live-key="${{key}}"]`).forEach((el) => {{
+        if (value === undefined || value === null) return;
+        if (key === "bot_status") {{
+          const label = String(value || "offline");
+          const text = label.charAt(0).toUpperCase() + label.slice(1);
+          if (el.classList.contains("badge")) {{
+            el.textContent = `Bot status: ${{text}}`;
+          }} else {{
+            el.textContent = text;
+          }}
+          return;
+        }}
+        if (key === "bot_latency_ms") {{
+          const text = value === "—" || value === null || value === undefined ? "— ms" : `${{value}} ms`;
+          el.textContent = text;
+          return;
+        }}
+        if (el.classList.contains("badge")) {{
+          const prefix = key === "panel_uptime" ? "Panel uptime: " : key === "bot_uptime" ? "Bot uptime: " : "";
+          el.textContent = `${{prefix}}${{value}}`;
+        }} else {{
+          el.textContent = value;
+        }}
+      }});
+    }};
+
+    const tickUptimes = () => {{
+      document.querySelectorAll('[data-live="uptime"]').forEach((el) => {{
+        const text = formatUptime(el.dataset.bootTs);
+        if (text !== "—") {{
+          if (el.classList.contains("badge")) {{
+            const prefix = el.dataset.liveKey === "panel_uptime" ? "Panel uptime: " : "Bot uptime: ";
+            el.textContent = `${{prefix}}${{text}}`;
+          }} else {{
+            el.textContent = text;
+          }}
+        }}
+      }});
+    }};
+
+    const applyRuntime = (runtime) => {{
+      if (!runtime) return;
+      setByKey("bot_status", runtime.bot_status || "offline");
+      setByKey("bot_latency_ms", runtime.bot_latency_ms ?? "—");
+      setByKey("guild_count", runtime.guild_count ?? 0);
+      setByKey("user_count", runtime.user_count ?? 0);
+      setByKey("node_players", runtime.node_players ?? 0);
+      setByKey("voice_clients", runtime.voice_clients ?? 0);
+      if (runtime.panel_boot_ts) {{
+        document.querySelectorAll('[data-live-key="panel_uptime"]').forEach((el) => el.dataset.bootTs = runtime.panel_boot_ts);
+      }}
+      if (runtime.bot_boot_ts) {{
+        document.querySelectorAll('[data-live-key="bot_uptime"]').forEach((el) => el.dataset.bootTs = runtime.bot_boot_ts);
+      }}
+      tickUptimes();
+    }};
+
+    const refreshRuntime = async () => {{
+      try {{
+        const response = await fetch(statusUrl, {{ cache: "no-store" }});
+        if (!response.ok) return;
+        const payload = await response.json();
+        applyRuntime(payload.runtime || payload);
+      }} catch (_err) {{
+      }}
+    }};
+
+    tickUptimes();
+    refreshRuntime();
+    setInterval(tickUptimes, 1000);
+    setInterval(refreshRuntime, 5000);
+  }})();
+  </script>
 </body>
 </html>
 """
@@ -798,6 +921,8 @@ def _collect_runtime_status(bot: discord.Client | None = None) -> dict[str, obje
     return {
         "panel_uptime": _format_uptime(time.time() - _BOOT_TS),
         "bot_uptime": _format_uptime(bot_uptime_seconds) if bot_uptime_seconds is not None else "—",
+        "panel_boot_ts": _BOOT_TS,
+        "bot_boot_ts": bot_boot_ts,
         "bot_status": bot_status,
         "bot_latency_ms": bot_latency_ms,
         "guild_count": guild_count,
@@ -815,19 +940,25 @@ def _collect_runtime_status(bot: discord.Client | None = None) -> dict[str, obje
 
 def _render_status_cards(status: dict[str, object]) -> str:
     cards = [
-        ("Panel uptime", status.get("panel_uptime") or "—", "Web admin process age"),
-        ("Bot uptime", status.get("bot_uptime") or "—", "Discord bot process age"),
-        ("Bot status", str(status.get("bot_status") or "offline").title(), "Discord connection state"),
-        ("Latency", f"{status.get('bot_latency_ms') or '—'} ms", "Discord gateway"),
-        ("Guilds", str(status.get("guild_count") or 0), "Connected servers"),
-        ("Users", str(status.get("user_count") or 0), "Cached member count"),
-        ("Players", str(status.get("node_players") or 0), "Active music sessions"),
-        ("Voice", str(status.get("voice_clients") or 0), "Discord voice clients"),
+        ("panel_uptime", "Panel uptime", status.get("panel_uptime") or "—", "Web admin process age", True),
+        ("bot_uptime", "Bot uptime", status.get("bot_uptime") or "—", "Discord bot process age", True),
+        ("bot_status", "Bot status", str(status.get("bot_status") or "offline").title(), "Discord connection state", False),
+        ("bot_latency_ms", "Latency", f"{status.get('bot_latency_ms') or '—'} ms", "Discord gateway", False),
+        ("guild_count", "Guilds", str(status.get("guild_count") or 0), "Connected servers", False),
+        ("user_count", "Users", str(status.get("user_count") or 0), "Cached member count", False),
+        ("node_players", "Players", str(status.get("node_players") or 0), "Active music sessions", False),
+        ("voice_clients", "Voice", str(status.get("voice_clients") or 0), "Discord voice clients", False),
     ]
     rendered = []
-    for label, value, hint in cards:
+    for key, label, value, hint, live_time in cards:
+        live_attr = ""
+        if live_time:
+            boot_ts = status.get("panel_boot_ts") if key == "panel_uptime" else status.get("bot_boot_ts")
+            live_attr = f' data-live="uptime" data-boot-ts="{_esc(boot_ts or "")}" data-live-key="{_esc(key)}"'
+        else:
+            live_attr = f' data-live-key="{_esc(key)}"'
         rendered.append(
-            f'<div class="stat"><div class="label">{_esc(label)}</div><div class="value">{_esc(value)}</div><div class="hint">{_esc(hint)}</div></div>'
+            f'<div class="stat"><div class="label">{_esc(label)}</div><div class="value" id="stat-{_esc(key)}"{live_attr}>{_esc(value)}</div><div class="hint">{_esc(hint)}</div></div>'
         )
     return "".join(rendered)
 
@@ -909,9 +1040,9 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
         f"<span class='badge green'>Auth: Basic/token</span>",
         f"<span class='badge'>{_esc(os.getenv('WEB_ADMIN_HOST', '0.0.0.0'))}:{_esc(os.getenv('WEB_ADMIN_PORT', '8080'))}</span>",
         f"<span class='badge'>{_esc('restart required for .env changes')}</span>",
-        f"<span class='badge purple'>Panel uptime: {_esc(status.get('panel_uptime') or '—')}</span>",
-        f"<span class='badge blue'>Bot uptime: {_esc(status.get('bot_uptime') or '—')}</span>",
-        f"<span class='badge blue'>Bot status: {_esc(str(status.get('bot_status') or 'offline').title())}</span>",
+        f"<span class='badge purple' data-live='uptime' data-boot-ts='{_esc(status.get('panel_boot_ts') or _BOOT_TS)}' data-live-key='panel_uptime'>Panel uptime: {_esc(status.get('panel_uptime') or '—')}</span>",
+        f"<span class='badge blue' data-live='uptime' data-boot-ts='{_esc(status.get('bot_boot_ts') or '')}' data-live-key='bot_uptime'>Bot uptime: {_esc(status.get('bot_uptime') or '—')}</span>",
+        f"<span class='badge blue' data-live-key='bot_status'>Bot status: {_esc(str(status.get('bot_status') or 'offline').title())}</span>",
     ]
 
     body = f"""
@@ -941,10 +1072,17 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
 
       <div class="card">
         <div class="section-title"><h2>Actions</h2></div>
-        <div class="actions">
-          <form method="post" action="/sync?token={_esc(token)}"><button type="submit">Sync commands</button></form>
-          <form method="post" action="/reload?token={_esc(token)}"><input name="extension" placeholder="module name" /><button type="submit">Reload</button></form>
-          <form method="post" action="/restart-bot?token={_esc(token)}"><button type="submit" class="btn danger">Restart bot</button></form>
+        <div class="action-stack">
+          <form method="post" action="/sync?token={_esc(token)}">
+            <button type="submit" class="btn success" style="width: 100%;">Sync commands</button>
+          </form>
+          <form method="post" action="/reload?token={_esc(token)}" class="action-inline">
+            <input name="extension" placeholder="module name" />
+            <button type="submit">Reload</button>
+          </form>
+          <form method="post" action="/restart-bot?token={_esc(token)}">
+            <button type="submit" class="btn danger" style="width: 100%;">Restart bot</button>
+          </form>
         </div>
         <p class="subtle">Use module names like <code>giveaway</code>, <code>gsay</code>, <code>signups</code>, <code>joinfamily</code>, <code>ocr_module</code>.</p>
         <p class="mini">Reload/sync are queued and executed by the bot when it is online; restart uses systemd.</p>
@@ -952,11 +1090,11 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
 
       <div class="card">
         <div class="section-title"><h2>Quick links</h2></div>
-        <div class="actions">
-          <a class="btn secondary" href="/settings?token={_esc(token)}">Module settings</a>
-          <a class="btn secondary" href="/env?token={_esc(token)}">Environment</a>
-          <a class="btn secondary" href="/music?token={_esc(token)}">Music</a>
-          <a class="btn secondary" href="/logs?n=500&token={_esc(token)}">Last 500 log lines</a>
+        <div class="link-grid">
+          <a class="link-card" href="/settings?token={_esc(token)}"><span>Module settings</span><span class="mini">Config overrides</span></a>
+          <a class="link-card" href="/env?token={_esc(token)}"><span>Environment</span><span class="mini">.env editor</span></a>
+          <a class="link-card" href="/music?token={_esc(token)}"><span>Music</span><span class="mini">Live players</span></a>
+          <a class="link-card" href="/logs?n=500&token={_esc(token)}"><span>Logs</span><span class="mini">Recent output</span></a>
         </div>
         <div class="footer">Environment changes are written to <code>.env</code>; restart is required for most keys.</div>
       </div>
@@ -1002,7 +1140,7 @@ def _render_music_page(bot: discord.Client | None, token: str) -> str:
       <div class="chips">
         <span class="badge green">{_esc(status.get("node_players") or 0)} players</span>
         <span class="badge">{_esc(status.get("guild_count") or 0)} guilds</span>
-        <span class="badge blue">Bot status: {_esc(str(status.get('bot_status') or 'offline').title())}</span>
+        <span class="badge blue" data-live-key="bot_status">Bot status: {_esc(str(status.get('bot_status') or 'offline').title())}</span>
         <a class="btn secondary" href="/?token={_esc(token)}">Dashboard</a>
         {_refresh_button(refresh_href)}
         <a class="btn secondary" href="/api/music?token={_esc(token)}">API</a>
