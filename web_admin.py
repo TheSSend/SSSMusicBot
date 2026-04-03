@@ -500,6 +500,68 @@ def _channel_label(guild: discord.Guild | None, channel_id: int | None) -> str:
     return f"Channel {channel_id}"
 
 
+def _guild_label(bot: discord.Client, guild_id: int | None) -> str:
+    if not guild_id:
+        return "not set"
+    guild = bot.get_guild(guild_id)
+    if guild is not None:
+        return f"{guild.name} ({guild.id})"
+    return f"Guild {guild_id}"
+
+
+def _user_label(bot: discord.Client, user_id: int | None) -> str:
+    if not user_id:
+        return "not set"
+    user = bot.get_user(user_id)
+    if user is not None:
+        username = getattr(user, "global_name", None) or getattr(user, "display_name", None) or getattr(user, "name", None) or str(user_id)
+        return f"{username} ({user.id})"
+    return f"User {user_id}"
+
+
+def _resolve_ids_badges(items: list[int], resolver, guild: discord.Guild | None = None) -> str:
+    if not items:
+        return "<span class='mini'>Not set</span>"
+    chips = []
+    for item_id in items:
+        label = resolver(guild, item_id) if guild is not None else resolver(item_id)
+        chips.append(f"<span class='badge'>{_esc(label)}</span>")
+    return "<div class='sidebar-chip-row'>" + "".join(chips) + "</div>"
+
+
+def _resolve_env_hint(bot: discord.Client, key: str, value: str | None) -> str | None:
+    if not value:
+        return None
+    if key == "GUILD_ID":
+        return _guild_label(bot, _env_int(value))
+    if key == "OWNER_ID":
+        return _user_label(bot, _env_int(value))
+    if key == "GIVEAWAY_ADMIN_ROLE_ID":
+        guild = _selected_guild(bot)
+        return _role_label(guild, _env_int(value))
+    if key in {"GSAY_ALLOWED_ROLES", "HR_ACCESS", "SIGNUP_MANAGERS", "SIGNUP_ADMINS"}:
+        guild = _selected_guild(bot)
+        ids = _env_int_list(value)
+        if not ids:
+            return None
+        return ", ".join(_role_label(guild, item_id) for item_id in ids)
+    if key in {"FAMILY_CALL_CHANNELS"}:
+        guild = _selected_guild(bot)
+        ids = _env_int_list(value)
+        if not ids:
+            return None
+        return ", ".join(_channel_label(guild, item_id) for item_id in ids)
+    if key in {"FAMILY_LOG_CHANNEL", "FAMILY_REMOVE_ROLE_ID", "FAMILY_ADD_ROLE_1_ID", "FAMILY_ADD_ROLE_2_ID"}:
+        guild = _selected_guild(bot)
+        item_id = _env_int(value)
+        if item_id is None:
+            return None
+        if key == "FAMILY_LOG_CHANNEL":
+            return _channel_label(guild, item_id)
+        return _role_label(guild, item_id)
+    return None
+
+
 def _render_badges(items: list[str]) -> str:
     if not items:
         return "<span class='mini'>Not set</span>"
@@ -680,7 +742,7 @@ def _render_player_rows(players: list[dict[str, object]]) -> str:
     )
 
 
-def _render_env_sections() -> str:
+def _render_env_sections(bot: discord.Client) -> str:
     current = _current_env_snapshot()
     sections = {
         "Core": ["DISCORD_TOKEN", "OWNER_ID", "GUILD_ID", "MUSICBOT_DATA_DIR", "MUSICBOT_LOG_DIR"],
@@ -697,11 +759,14 @@ def _render_env_sections() -> str:
             value = current.get(key) or ""
             display_value = "" if secret else value
             badge = "configured" if value else "empty"
+            resolved_hint = _resolve_env_hint(bot, key, value)
+            resolved_html = f"<div class='mini'>Current: {_esc(resolved_hint)}</div>" if resolved_hint else ""
             fields.append(
                 "<div class='field'>"
                 f"<label>{_esc(label)} <span class='badge'>{_esc(badge)}</span></label>"
                 f"{_field_input(key, display_value, input_type=input_type, placeholder='leave blank to keep current' if secret else '', secret=secret)}"
                 f"<div class='hint'>{_esc(hint)}</div>"
+                f"{resolved_html}"
                 "</div>"
             )
         parts.append(f"<div class='card'><div class='section-title'><h3>{_esc(title)}</h3></div><div class='field-grid'>{''.join(fields)}</div></div>")
@@ -1026,8 +1091,15 @@ async def _api_music(request: web.Request) -> web.Response:
 
 async def _env_get(request: web.Request) -> web.Response:
     _require_token(request)
+    bot = request.app["bot"]
     token = request.query.get("token", "")
     current = _current_env_snapshot()
+    resolved_core = [
+        ("Guild", _resolve_env_hint(bot, "GUILD_ID", os.getenv("GUILD_ID")) or "not set", "Used for guild-scoped sync"),
+        ("Owner", _resolve_env_hint(bot, "OWNER_ID", os.getenv("OWNER_ID")) or "not set", "Discord owner account"),
+        ("Call channels", _resolve_env_hint(bot, "FAMILY_CALL_CHANNELS", os.getenv("FAMILY_CALL_CHANNELS")) or "not set", "JoinFamily allowed channels"),
+        ("Managers", _resolve_env_hint(bot, "SIGNUP_MANAGERS", os.getenv("SIGNUP_MANAGERS")) or "not set", "Signup manager roles"),
+    ]
     body = f"""
     <div class="topbar hero">
       <div class="brand">
@@ -1049,12 +1121,18 @@ async def _env_get(request: web.Request) -> web.Response:
       </div>
       <form method="post" action="/env/save?token={_esc(token)}">
         <div class="field-grid">
-          {_render_env_sections()}
+          {_render_env_sections(bot)}
         </div>
         <div class="actions" style="margin-top: 16px;">
           <button type="submit" class="btn success">Save .env</button>
         </div>
       </form>
+    </div>
+    <div class="card" style="margin-top: 18px;">
+      <div class="section-title"><h2>Resolved references</h2></div>
+      <div class="stats">
+        {''.join(f'<div class="stat"><div class="label">{_esc(label)}</div><div class="value">{_esc(value)}</div><div class="hint">{_esc(hint)}</div></div>' for label, value, hint in resolved_core)}
+      </div>
     </div>
     <div class="card" style="margin-top: 18px;">
       <div class="section-title"><h2>Current snapshot</h2></div>
