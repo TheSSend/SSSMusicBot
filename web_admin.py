@@ -1438,16 +1438,35 @@ async def _logs(request: web.Request) -> web.Response:
     tail, source = _read_log_tail(n)
     extra_head = """
     <script>
-      window.addEventListener('DOMContentLoaded', () => {
-        const viewer = document.querySelector('.log-viewer');
-        if (viewer) {
-          viewer.scrollTop = viewer.scrollHeight;
-        }
-        const pre = viewer ? viewer.querySelector('pre') : null;
-        if (pre) {
-          pre.scrollTop = pre.scrollHeight;
-        }
-      });
+      (() => {
+        const scrollLogs = () => {
+          const card = document.getElementById('logs-card');
+          const viewer = document.getElementById('logs-viewer');
+          const bottom = document.getElementById('logs-bottom');
+          if (card) {
+            card.scrollIntoView({ block: 'start', inline: 'nearest' });
+          }
+          if (viewer) {
+            viewer.scrollTop = viewer.scrollHeight;
+            viewer.scrollLeft = 0;
+          }
+          if (bottom) {
+            bottom.scrollIntoView({ block: 'end', inline: 'nearest' });
+          }
+          window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
+        };
+
+        const schedule = () => {
+          scrollLogs();
+          requestAnimationFrame(scrollLogs);
+          requestAnimationFrame(() => requestAnimationFrame(scrollLogs));
+          setTimeout(scrollLogs, 60);
+          setTimeout(scrollLogs, 240);
+        };
+
+        window.addEventListener('load', schedule, { once: true });
+        window.addEventListener('pageshow', schedule, { once: true });
+      })();
     </script>
     """
     body = f"""
@@ -1462,8 +1481,8 @@ async def _logs(request: web.Request) -> web.Response:
         {_refresh_button(f"/logs?n={n}&token={_esc(token)}")}
       </div>
     </div>
-    <div class="card">
-      <div class="log-viewer"><pre>{_esc(tail)}</pre></div>
+    <div class="card" id="logs-card">
+      <div class="log-viewer" id="logs-viewer"><pre>{_esc(tail)}</pre><div id="logs-bottom"></div></div>
     </div>
     """
     return _html_response(_page("Logs", token, body, extra_head=extra_head, status=_collect_runtime_status(bot)))
