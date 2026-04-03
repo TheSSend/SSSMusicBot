@@ -478,6 +478,14 @@ def _load_panel_state() -> dict[str, object]:
         return {}
 
 
+def _refresh_button(href: str) -> str:
+    return f'<a class="btn secondary" href="{_esc(href)}">Refresh</a>'
+
+
+def _html_response(body: str) -> web.Response:
+    return web.Response(text=body, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
 def _selected_guild(bot: discord.Client | None) -> discord.Guild | dict[str, object] | None:
     guild_id = _env_int(os.getenv("GUILD_ID"))
     if bot is not None:
@@ -700,6 +708,44 @@ def _load_player_state() -> dict[str, object]:
 def _collect_runtime_status(bot: discord.Client | None = None) -> dict[str, object]:
     player_state = _load_player_state()
     panel_state = _load_panel_state()
+    bot_snapshot = panel_state.get("bot") if isinstance(panel_state.get("bot"), dict) else {}
+
+    bot_boot_ts = bot_snapshot.get("boot_ts")
+    bot_uptime_seconds = bot_snapshot.get("uptime_seconds")
+    bot_status = str(bot_snapshot.get("status") or "offline")
+    bot_latency_ms = bot_snapshot.get("latency_ms")
+    bot_voice_clients = bot_snapshot.get("voice_client_count") if isinstance(bot_snapshot.get("voice_client_count"), int) else None
+    bot_guild_count = bot_snapshot.get("guild_count") if isinstance(bot_snapshot.get("guild_count"), int) else None
+
+    if bot is not None:
+        try:
+            bot_status = "online" if bot.is_ready() else "connecting"
+        except Exception:
+            bot_status = bot_status or "offline"
+        try:
+            if getattr(bot, "latency", None) is not None:
+                bot_latency_ms = round((bot.latency or 0) * 1000, 1)
+        except Exception:
+            pass
+        try:
+            bot_voice_clients = len(getattr(bot, "voice_clients", []) or [])
+        except Exception:
+            bot_voice_clients = bot_voice_clients or 0
+        try:
+            bot_guild_count = len(getattr(bot, "guilds", []) or [])
+        except Exception:
+            bot_guild_count = bot_guild_count or 0
+        try:
+            bot_boot_ts = getattr(bot, "_ready_ts", None) or bot_boot_ts
+            if bot_boot_ts:
+                bot_uptime_seconds = max(0.0, time.time() - float(bot_boot_ts))
+        except Exception:
+            pass
+    elif bot_uptime_seconds is None and bot_boot_ts:
+        try:
+            bot_uptime_seconds = max(0.0, time.time() - float(bot_boot_ts))
+        except (TypeError, ValueError):
+            bot_uptime_seconds = None
 
     players: list[dict[str, object]] = []
     for guild_id_str, pd in player_state.items():
@@ -750,24 +796,29 @@ def _collect_runtime_status(bot: discord.Client | None = None) -> dict[str, obje
             member_count += int(guild.get("member_count") or 0)
 
     return {
-        "uptime": _format_uptime(time.time() - _BOOT_TS),
-        "latency_ms": None if bot is None else round((bot.latency or 0) * 1000, 1) if getattr(bot, "latency", None) is not None else None,
+        "panel_uptime": _format_uptime(time.time() - _BOOT_TS),
+        "bot_uptime": _format_uptime(bot_uptime_seconds) if bot_uptime_seconds is not None else "—",
+        "bot_status": bot_status,
+        "bot_latency_ms": bot_latency_ms,
         "guild_count": guild_count,
         "user_count": member_count,
         "extensions": [],
-        "voice_clients": len(players),
+        "voice_clients": bot_voice_clients if bot_voice_clients is not None else len(players),
         "is_closed": False if bot is None else bool(getattr(bot, "is_closed", lambda: False)()),
         "ws_connected": False if bot is None else getattr(bot, "ws", None) is not None,
         "node_identifier": "local-state",
         "node_players": len(players),
+        "bot_guild_count": bot_guild_count if bot_guild_count is not None else guild_count,
         "players": players,
     }
 
 
 def _render_status_cards(status: dict[str, object]) -> str:
     cards = [
-        ("Uptime", status.get("uptime") or "—", "Process age"),
-        ("Latency", f"{status.get('latency_ms') or '—'} ms", "Discord gateway"),
+        ("Panel uptime", status.get("panel_uptime") or "—", "Web admin process age"),
+        ("Bot uptime", status.get("bot_uptime") or "—", "Discord bot process age"),
+        ("Bot status", str(status.get("bot_status") or "offline").title(), "Discord connection state"),
+        ("Latency", f"{status.get('bot_latency_ms') or '—'} ms", "Discord gateway"),
         ("Guilds", str(status.get("guild_count") or 0), "Connected servers"),
         ("Users", str(status.get("user_count") or 0), "Cached member count"),
         ("Players", str(status.get("node_players") or 0), "Active music sessions"),
@@ -853,10 +904,14 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
         web_config = {}
 
     players_html = _render_player_rows(status["players"] if isinstance(status.get("players"), list) else [])
+    refresh_href = f"/?token={_esc(token)}"
     env_status = [
         f"<span class='badge green'>Auth: Basic/token</span>",
         f"<span class='badge'>{_esc(os.getenv('WEB_ADMIN_HOST', '0.0.0.0'))}:{_esc(os.getenv('WEB_ADMIN_PORT', '8080'))}</span>",
         f"<span class='badge'>{_esc('restart required for .env changes')}</span>",
+        f"<span class='badge purple'>Panel uptime: {_esc(status.get('panel_uptime') or '—')}</span>",
+        f"<span class='badge blue'>Bot uptime: {_esc(status.get('bot_uptime') or '—')}</span>",
+        f"<span class='badge blue'>Bot status: {_esc(str(status.get('bot_status') or 'offline').title())}</span>",
     ]
 
     body = f"""
@@ -875,6 +930,7 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
         <div class="section-title">
           <h2>Overview</h2>
           <div class="actions">
+            {_refresh_button(refresh_href)}
             <a class="btn secondary" href="/api/status?token={_esc(token)}">API status</a>
             <a class="btn secondary" href="/config?token={_esc(token)}">Config JSON</a>
             <a class="btn secondary" href="/logs?n=200&token={_esc(token)}">Logs</a>
@@ -936,6 +992,7 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
 def _render_music_page(bot: discord.Client | None, token: str) -> str:
     status = _collect_runtime_status(bot)
     players = status.get("players") if isinstance(status.get("players"), list) else []
+    refresh_href = f"/music?token={_esc(token)}"
     body = f"""
     <div class="topbar hero">
       <div class="brand">
@@ -945,7 +1002,9 @@ def _render_music_page(bot: discord.Client | None, token: str) -> str:
       <div class="chips">
         <span class="badge green">{_esc(status.get("node_players") or 0)} players</span>
         <span class="badge">{_esc(status.get("guild_count") or 0)} guilds</span>
+        <span class="badge blue">Bot status: {_esc(str(status.get('bot_status') or 'offline').title())}</span>
         <a class="btn secondary" href="/?token={_esc(token)}">Dashboard</a>
+        {_refresh_button(refresh_href)}
         <a class="btn secondary" href="/api/music?token={_esc(token)}">API</a>
       </div>
     </div>
@@ -1071,14 +1130,14 @@ async def _index(request: web.Request) -> web.Response:
     bot = request.app.get("bot")
     token = request.query.get("token", "")
     store: JsonStore = request.app["config_store"]
-    return web.Response(text=_render_dashboard(bot, token, store), content_type="text/html")
+    return _html_response(_render_dashboard(bot, token, store))
 
 
 async def _music(request: web.Request) -> web.Response:
     _require_token(request)
     bot = request.app.get("bot")
     token = request.query.get("token", "")
-    return web.Response(text=_render_music_page(bot, token), content_type="text/html")
+    return _html_response(_render_music_page(bot, token))
 
 
 async def _logs(request: web.Request) -> web.Response:
@@ -1097,13 +1156,14 @@ async def _logs(request: web.Request) -> web.Response:
       <div class="chips">
         <span class="badge">{_esc(n)} lines</span>
         <a class="btn secondary" href="/?token={_esc(token)}">Dashboard</a>
+        {_refresh_button(f"/logs?n={n}&token={_esc(token)}")}
       </div>
     </div>
     <div class="card">
       <pre>{_esc(tail)}</pre>
     </div>
     """
-    return web.Response(text=_page("Logs", token, body), content_type="text/html")
+    return _html_response(_page("Logs", token, body))
 
 
 async def _config_get(request: web.Request) -> web.Response:
@@ -1183,6 +1243,7 @@ async def _env_get(request: web.Request) -> web.Response:
       <div class="chips">
         <span class="badge yellow">Restart required</span>
         <span class="badge">File: {_esc(_env_file_path())}</span>
+        <a class="btn secondary" href="/env?token={_esc(token)}">Refresh</a>
       </div>
     </div>
     <div class="card">
@@ -1216,7 +1277,7 @@ async def _env_get(request: web.Request) -> web.Response:
       </details>
     </div>
     """
-    return web.Response(text=_page("Environment", token, body), content_type="text/html")
+    return _html_response(_page("Environment", token, body))
 
 
 async def _env_save(request: web.Request) -> web.Response:
@@ -1355,6 +1416,7 @@ async def _settings_get(request: web.Request) -> web.Response:
       <div class="chips">
         <span class="badge yellow">Reload extension after save</span>
         <span class="badge">{_esc(len(cfg))} top-level keys</span>
+        <a class="btn secondary" href="/settings?token={_esc(token)}">Refresh</a>
       </div>
     </div>
 
@@ -1430,7 +1492,7 @@ async def _settings_get(request: web.Request) -> web.Response:
       <pre>{_esc(json.dumps(cfg, ensure_ascii=False, indent=2))}</pre>
     </div>
     """
-    return web.Response(text=_page("Module settings", token, body), content_type="text/html")
+    return _html_response(_page("Module settings", token, body))
 
 
 async def _settings_save(request: web.Request) -> web.Response:

@@ -26,6 +26,7 @@ from json_store import JsonStore
 from runtime_paths import data_path
 
 logger = logging.getLogger(__name__)
+BOT_BOOT_TS = time.time()
 
 YOUTUBE_HOSTS = {
     "youtube.com",
@@ -104,6 +105,18 @@ def dump_panel_state() -> None:
 
     def _mutate(state: dict) -> dict:
         state["updated_at"] = time.time()
+        state["bot"] = {
+            "status": "online" if bot.is_ready() else "connecting",
+            "connected": not bot.is_closed(),
+            "ws_connected": getattr(bot, "ws", None) is not None,
+            "user": str(bot.user) if bot.user else None,
+            "guild_count": len(bot.guilds),
+            "voice_client_count": len(bot.voice_clients),
+            "latency_ms": round((bot.latency or 0) * 1000, 1) if getattr(bot, "latency", None) is not None else None,
+            "boot_ts": BOT_BOOT_TS,
+            "uptime_seconds": max(0.0, time.time() - BOT_BOOT_TS),
+            "ready": bot.is_ready(),
+        }
         state["selected_guild"] = selected_guild
         state["guilds"] = guilds
         return state
@@ -1035,6 +1048,8 @@ async def sync(interaction: discord.Interaction):
 @bot.event
 async def on_ready():
     logger.info("Бот %s готов", bot.user)
+    if not hasattr(bot, "_ready_ts"):
+        bot._ready_ts = time.time()
     dump_panel_state()
     await update_presence()
 
