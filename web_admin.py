@@ -115,7 +115,8 @@ def _field_input(name: str, value: str | None, input_type: str = "text", placeho
     return f'<input name="{_esc(name)}" type="{input_type}" value="{safe_value}" placeholder="{safe_placeholder}" />'
 
 
-def _page(title: str, token: str, body: str, extra_head: str = "") -> str:
+def _page(title: str, token: str, body: str, extra_head: str = "", status: dict[str, object] | None = None) -> str:
+    status = status or {}
     nav_items = [
         ("Dashboard", "/?token={token}"),
         ("Music", "/music?token={token}"),
@@ -1208,7 +1209,7 @@ def _render_dashboard(bot: discord.Client | None, token: str, store: JsonStore) 
       </div>
     </div>
     """
-    return _page("Musicbot Admin", token, body)
+    return _page("Musicbot Admin", token, body, status=status)
 
 
 def _render_music_page(bot: discord.Client | None, token: str) -> str:
@@ -1239,7 +1240,7 @@ def _render_music_page(bot: discord.Client | None, token: str) -> str:
       {_render_player_rows(players)}
     </div>
     """
-    return _page("Music", token, body)
+    return _page("Music", token, body, status=status)
 
 
 def _basic_auth_credentials() -> tuple[str, str]:
@@ -1364,6 +1365,7 @@ async def _music(request: web.Request) -> web.Response:
 
 async def _logs(request: web.Request) -> web.Response:
     _require_token(request)
+    bot = request.app.get("bot")
     n = int(request.query.get("n", "200"))
     n = max(10, min(n, 5000))
     token = request.query.get("token", "")
@@ -1385,7 +1387,7 @@ async def _logs(request: web.Request) -> web.Response:
       <pre>{_esc(tail)}</pre>
     </div>
     """
-    return _html_response(_page("Logs", token, body))
+    return _html_response(_page("Logs", token, body, status=_collect_runtime_status(bot)))
 
 
 async def _config_get(request: web.Request) -> web.Response:
@@ -1499,7 +1501,7 @@ async def _env_get(request: web.Request) -> web.Response:
       </details>
     </div>
     """
-    return _html_response(_page("Environment", token, body))
+    return _html_response(_page("Environment", token, body, status=_collect_runtime_status(bot)))
 
 
 async def _env_save(request: web.Request) -> web.Response:
@@ -1714,7 +1716,7 @@ async def _settings_get(request: web.Request) -> web.Response:
       <pre>{_esc(json.dumps(cfg, ensure_ascii=False, indent=2))}</pre>
     </div>
     """
-    return _html_response(_page("Module settings", token, body))
+    return _html_response(_page("Module settings", token, body, status=_collect_runtime_status(bot)))
 
 
 async def _settings_save(request: web.Request) -> web.Response:
