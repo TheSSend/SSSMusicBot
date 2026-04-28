@@ -20,7 +20,17 @@ data_lock = asyncio.Lock()
 
 _store = JsonStore(data_path("signups.json"))
 
-from web_config import get_web_config, get_int_list
+from web_config import get_web_config, get_int, get_int_list
+
+
+def _get_signup_log_channel() -> int | None:
+    """Return the channel ID where signup audit logs should be posted."""
+    cfg = get_web_config()
+    val = get_int(cfg, ["signups", "log_channel"], default=None)
+    if val is not None:
+        return val
+    raw = os.getenv("SIGNUP_LOG_CHANNEL", "").strip()
+    return int(raw) if raw.isdigit() else None
 
 
 def _get_signup_managers() -> list[int]:
@@ -106,6 +116,11 @@ def format_time_left(end_dt):
 def build_signup_embed(signup, guild):
     end_dt = parse_date(signup["end_date"])
 
+    # Prefer stored unix timestamp; fall back to parsing
+    end_unix = signup.get("end_unix")
+    if end_unix is None and isinstance(end_dt, datetime):
+        end_unix = int(to_utc(end_dt).timestamp())
+
     main = [f"<@{u['id']}>" for u in signup["participants"] if u["place"] == "main"]
     extra = [f"<@{u['id']}>" for u in signup["participants"] if u["place"] == "extra"]
 
@@ -115,12 +130,12 @@ def build_signup_embed(signup, guild):
         color=0x5865F2 if not signup.get("closed") else 0x2F3136
     )
 
-    if isinstance(end_dt, datetime):
+    if end_unix:
         embed.add_field(
             name="🗓 Информация",
             value=(
-                f"**Дата:** {end_dt.strftime('%d.%m.%Y')} | {end_dt.strftime('%H:%M')}\n"
-                f"**Осталось:** {format_time_left(end_dt)}"
+                f"**Дата:** <t:{end_unix}:F>\n"
+                f"**Осталось:** <t:{end_unix}:R>"
             ),
             inline=False
         )
@@ -216,6 +231,25 @@ class SignupView(discord.ui.View):
                 except Exception:
                     logger.exception("Не удалось добавить пользователя в thread signup")
 
+        # ── audit log: join ──
+        log_thread_id = sign.get("log_thread_id")
+        if log_thread_id:
+            log_thread = interaction.guild.get_thread(log_thread_id)
+            if log_thread is None:
+                try:
+                    log_thread = await self.bot.fetch_channel(log_thread_id)
+                except Exception:
+                    log_thread = None
+            if log_thread:
+                place_label = "основной" if place == "main" else "резерв"
+                ts = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+                try:
+                    await log_thread.send(
+                        f"✅ **Вступил** — {interaction.user.mention} ({place_label}) · {ts}"
+                    )
+                except Exception:
+                    logger.exception("Не удалось записать лог вступления в signup")
+
         channel = self.bot.get_channel(sign["channel_id"])
         if not channel:
             await interaction.followup.send("❌ Канал записи не найден.", ephemeral=True)
@@ -247,6 +281,24 @@ class SignupView(discord.ui.View):
             ]
 
             _store.save(data)
+
+        # ── audit log: leave ──
+        log_thread_id = sign.get("log_thread_id")
+        if log_thread_id:
+            log_thread = interaction.guild.get_thread(log_thread_id)
+            if log_thread is None:
+                try:
+                    log_thread = await self.bot.fetch_channel(log_thread_id)
+                except Exception:
+                    log_thread = None
+            if log_thread:
+                ts = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+                try:
+                    await log_thread.send(
+                        f"❌ **Покинул** — {interaction.user.mention} · {ts}"
+                    )
+                except Exception:
+                    logger.exception("Не удалось записать лог выхода из signup")
 
         channel = self.bot.get_channel(sign["channel_id"])
         if not channel:
@@ -494,9 +546,44 @@ class Signups(commands.Cog):
 
             self._track_task(delete_tag())
 
+        # ── audit log: create log message + thread ──
+        log_thread_id = None
+        log_channel_id = _get_signup_log_channel()
+        if log_channel_id:
+            log_ch = self.bot.get_channel(log_channel_id)
+            if log_ch is None:
+                try:
+                    log_ch = await self.bot.fetch_channel(log_channel_id)
+                except Exception:
+                    log_ch = None
+            if log_ch:
+                msg_link = f"https://discord.com/channels/{interaction.guild.id}/{interaction.channel.id}/{message.id}"
+                ts = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+                log_embed = discord.Embed(
+                    title="📝 Лог записи",
+                    description=(
+                        f"**{title}**\n"
+                        f"Создал: {interaction.user.mention}\n"
+                        f"Время: {ts}\n"
+                        f"[Перейти к записи]({msg_link})"
+                    ),
+                    color=0x5865F2
+                )
+                try:
+                    log_msg = await log_ch.send(embed=log_embed)
+                    # create a thread on the log message for join/leave entries
+                    log_thread = await log_msg.create_thread(
+                        name=f"Лог: {title}",
+                        auto_archive_duration=1440
+                    )
+                    log_thread_id = log_thread.id
+                except Exception:
+                    logger.exception("Не удалось создать лог-сообщение / ветку для signup")
+
         signup = {
             "title": title,
             "end_date": end_date,
+            "end_unix": int(to_utc(dt).timestamp()),
             "slots": slots,
             "extra_slots": extra_slots or 0,
             "image": image.url if image else None,
@@ -506,7 +593,8 @@ class Signups(commands.Cog):
             "channel_id": interaction.channel.id,
             "closed": False,
             "thread_id": thread_id,
-            "thread_url": thread_url
+            "thread_url": thread_url,
+            "log_thread_id": log_thread_id
         }
 
         embed = build_signup_embed(signup, interaction.guild)
